@@ -1,0 +1,592 @@
+#include "user/BscanServer.h"
+#include "math.h"
+#define R_PI 3.1415926535898
+namespace bscan_server
+{
+void BscanServer::StartBscanServer(int cycle_times,HYYRobotBase::tool* tool,HYYRobotBase::wobj* wobj)
+{
+    printf("StartBscanServer start\n");
+    HYYRobotBase::init_tool(&tool_, NULL, 1, NULL);
+    if (NULL!=tool)
+    {
+        tool_=*tool;
+    }
+    HYYRobotBase::init_wobj(&wobj_, NULL, NULL, NULL, 0, 0, 0);
+    if (NULL!=wobj)
+    {
+        wobj_=*wobj;
+    }
+    
+    //创建server
+	int ret=HYYRobotBase::SocketCreate(NULL, 8888,"pc");
+	if (0!=ret)
+	{
+		printf("StartBscanServer: SocketCreate failure, err=%d\n",ret);
+		return;
+	}
+    sleep(1);
+    printf("StartBscanServer start socket\n");
+    HYYRobotBase::RTimer timer;
+    HYYRobotBase::initUserTimer(&timer,0,cycle_times);//定时周期为1倍总线周期
+    uint8_t buf[1024];
+    uint16_t offset=0;
+    server_state_=_stop;
+    uint8_t server_state_1=_stop;
+
+    //开启命令接收
+    cmd_thread_=std::thread(&BscanServer::cmd_server, this);
+    //数据反馈
+    while (true)
+    {
+        userTimer(&timer);
+        data_lock_.lock();
+        if ((server_state_1!=server_state_)&&(_stop==server_state_))
+        {
+            if (thread_.joinable())
+            {
+                thread_.join();
+            }
+            server_state_1=server_state_;
+        }
+        memset(buf,0,sizeof(buf));
+        offset=0;
+        double joint[10];
+        HYYRobotBase::GetCurrentJoint(joint, 0);
+        double cartesian[6];
+        HYYRobotBase::GetCurrentCartesian(tool,wobj, (HYYRobotBase::robpose*)cartesian, 0);
+        double R[3][3];
+        rpy2tr(&(cartesian[3]), R, 2);
+        tr2rpy(R, &(cartesian[3]), 3);
+        offset = HYYRobotBase::SetProtocolDataInt(buf,offset, "RobotState", HYYRobotBase::get_robot_move_state(0));
+        offset = HYYRobotBase::SetProtocolDataInt(buf,offset, "InputFeedback", input_feedback);
+        offset = HYYRobotBase::SetProtocolDataInt(buf,offset, "ServerState", server_state_);
+        offset = HYYRobotBase::SetProtocolDataDouble(buf,offset, "x", cartesian[0]);
+        offset = HYYRobotBase::SetProtocolDataDouble(buf,offset, "y", cartesian[1]);
+        offset = HYYRobotBase::SetProtocolDataDouble(buf,offset, "z", cartesian[2]);
+        offset = HYYRobotBase::SetProtocolDataDouble(buf,offset, "rx", cartesian[3]);
+        offset = HYYRobotBase::SetProtocolDataDouble(buf,offset, "ry", cartesian[4]);
+        offset = HYYRobotBase::SetProtocolDataDouble(buf,offset, "rz", cartesian[5]);
+        offset = HYYRobotBase::SetProtocolDataDouble(buf,offset, "joint1", joint[0]);
+        offset = HYYRobotBase::SetProtocolDataDouble(buf,offset, "joint2", joint[1]);
+        offset = HYYRobotBase::SetProtocolDataDouble(buf,offset, "joint3", joint[2]);
+        offset = HYYRobotBase::SetProtocolDataDouble(buf,offset, "joint4", joint[3]);
+        offset = HYYRobotBase::SetProtocolDataDouble(buf,offset, "joint5", joint[4]);
+        offset = HYYRobotBase::SetProtocolDataDouble(buf,offset, "joint6", joint[5]);
+         //发送数据到client
+        ret=HYYRobotBase::SocketSendByteI(buf, offset, "pc");
+        if (ret<0)
+        {
+            printf("StartBscanServer: SocketSendByteI failure\n");
+        }
+        if (0==ret)
+        {
+            break;
+        }
+        input_feedback=0;
+        data_lock_.unlock();
+    }
+    //结束处理
+    if (thread_.joinable())
+    {
+        thread_.join();
+    }
+    if (cmd_thread_.joinable())
+    {
+        cmd_thread_.join();
+    }
+    HYYRobotBase::SocketClose("pc");//关闭server
+    printf("StartBscanServer stop\n");
+}
+
+void BscanServer::cmd_server()
+{
+    uint8_t buf[1024];
+    while (true)
+    {
+        memset(buf,0,sizeof(buf));
+        int len=HYYRobotBase::SocketRecvByteI(buf, 1024, "pc");
+        if (0==len)
+        {
+            break;
+        }
+        if (len>0)
+        {
+            data_lock_.lock();
+            //判断数据格式是否正确
+            if (HYYRobotBase::IsProtocolRight(buf,len))
+            {
+                //解析数据
+                int func=0;
+                HYYRobotBase::GetProtocolDataInt(buf,"function",&func);
+                std::vector<double> tmp;
+                int cmd=0;
+                int err=0;
+                double v=0;
+                switch(func)
+                {
+                case 1://压入数据
+                    tmp.clear();
+                    err=HYYRobotBase::GetProtocolDataDouble(buf,"x",&v);
+                    tmp.push_back(v);
+                    err+=HYYRobotBase::GetProtocolDataDouble(buf,"y",&v);
+                    tmp.push_back(v);
+                    err+=HYYRobotBase::GetProtocolDataDouble(buf,"z",&v);
+                    tmp.push_back(v);
+                    err+=HYYRobotBase::GetProtocolDataDouble(buf,"rx",&v);
+                    tmp.push_back(v);
+                    err+=HYYRobotBase::GetProtocolDataDouble(buf,"ry",&v);
+                    tmp.push_back(v);
+                    err+=HYYRobotBase::GetProtocolDataDouble(buf,"rz",&v);
+                    tmp.push_back(v);
+                    if (0==err)
+                    {
+                        server_data_.push_back(tmp);
+                        printf("function:%d;data_size:%ld\n",func,server_data_.size());
+                    }
+                    else
+                    {
+                        input_feedback=-1;
+                    }
+                    break;
+                case 2://机器人控制
+                    err=HYYRobotBase::GetProtocolDataInt(buf,"cmd",&cmd);
+                    printf("function:%d;cmd:%d\n",func,cmd);
+                    switch(cmd)
+                    {
+                    case _start:
+                        if (_stop==server_state_)
+                        {
+                            server_state_=_start;
+                            thread_=std::thread(&BscanServer::state_server, this);
+                            usleep(2000);
+                        }
+                        else
+                        {
+                            input_feedback=-5;
+                        }
+                        break;
+                    case _stop:
+                        stop_server();
+                        break;
+                    case _pause:
+                        server_state_=_pause;
+                        pause_server();
+                        break;
+                    case _continue:
+                        server_state_=_continue;
+                        continue_server();
+                        break;
+                    default:
+                        input_feedback=-4;
+                        break;
+                    }
+                    break;
+                case 3://清理缓存区
+                    server_data_.clear();
+                    printf("function:%d;data_size:%ld\n",func,server_data_.size());
+                    break;
+                default:
+                    input_feedback=-3;
+                }
+            }
+            else
+            {
+                input_feedback=-2;
+            }
+            data_lock_.unlock();
+        }
+
+    }
+}
+
+void BscanServer::state_server()
+{
+        //
+        SETSPEED(sp,0.1,0.01);
+        HYYRobotBase::robpose rpose[100];
+        int num=server_data_.size();
+        int i=0;
+        double R[3][3];
+        for (i=0;i<num;i++)
+        {
+            rpy2tr(&(server_data_[i][3]), R, 3);
+		    tr2rpy(R, &(server_data_[i][3]), 2);
+            rpose[i].xyz[0]=server_data_[i][0];
+            rpose[i].xyz[1]=server_data_[i][1];
+            rpose[i].xyz[2]=server_data_[i][2];
+            rpose[i].kps[0]=server_data_[i][3];
+            rpose[i].kps[1]=server_data_[i][4];
+            rpose[i].kps[2]=server_data_[i][5];
+        }
+
+		IMPORTJOINT(jbscan1);
+        MoveA(jbscan1,sp,NULL,NULL,NULL);
+		IMPORTJOINT(jbscan);
+        MoveA(jbscan,sp,NULL,NULL,NULL);
+		// IMPORTJOINT(jbscan2);
+        // MoveA(jbscan2,sp,NULL,NULL,NULL);
+		MoveL(&(rpose[0]),sp,NULL,&tool_, &wobj_);
+	    //初始化力控制
+	    int ret=HYYRobotBase::SFCInit("SFC", 0, 1, NULL, &wobj_, 0);
+	    if (0!=ret)
+        {
+            server_state_=_stop;
+            return;
+        }
+        //设置力控参数
+        double M[6]={10,10,2,10,10,10};
+        double B[6]={1000,1000,200,1000,1000,1000};
+        double K[6]={5000,5000,0,10000,10000,10000};
+	    HYYRobotBase::SFCSetAdmittanceCtrlParam("SFC", M, B, K);
+        //设置期望力（非零力控，零导纳控制）
+	    double target_force[6]={0,0,-2,0,0,0};
+	    HYYRobotBase::SFCSetTargetForce("SFC", target_force);
+	    //开启力控制
+	    ret=HYYRobotBase::SFCStart("SFC");
+        if (0!=ret)
+        {
+            server_state_=_stop;
+            return;
+        }
+        if (num>1)
+        {
+            MoveS(&(rpose[1]), num-1, sp, NULL, &tool_, &wobj_);
+        }  
+        HYYRobotBase::Rsleep(200);
+        //关闭力控
+	    ret=HYYRobotBase::SFCEnd("SFC");
+        server_state_=_stop;
+}
+void BscanServer::stop_server()
+{
+    HYYRobotBase::move_stop_run();
+}
+void BscanServer::pause_server()
+{
+
+}
+void BscanServer::continue_server()
+{
+
+}
+
+void BscanServer::tr2rpy(double R[3][3], double* rpy, int flag)
+{
+	double eps = 0.000001;
+	double s = 0.0;
+	double c = 0.0;
+	double cp = 0.0;
+	//double Q = 0.0;
+	double m=0.0;
+
+	//matlab 四元数
+	double qs=0;
+	double kx=0;
+	double ky=0;
+	double kz=0;
+	double kx1=0;
+	double ky1=0;
+	double kz1=0;
+	int add=0;
+	double nm=0;
+	switch (flag)
+	{
+	case 0://XYZ order
+		if (fabs(R[2][2])<eps&&fabs(R[1][2])<eps)
+		{
+			//singularity
+			rpy[0] = 0;//roll is zero
+			rpy[1] =R_PI/2;// atan2(R[0][2], R[2][2]);//pitch
+			rpy[2] = atan2(R[1][0], R[1][1]);//yaw is sum of roll+yaw
+
+		}
+		else
+		{
+			rpy[0] = atan2(-R[1][2], R[2][2]);//roll
+			s = sin(rpy[0]);
+			c = cos(rpy[0]);
+			rpy[1] = atan2(R[0][2], c*R[2][2] - s*R[1][2]);//pitch
+			rpy[2] = atan2(-R[0][1], R[0][0]);//yaw
+
+		}
+		break;
+	case 1://ZYX order
+		if (fabs(R[0][0])<eps&&fabs(R[1][0])<eps)
+		{
+			//singularity
+			rpy[0] = 0;//roll is zero
+			rpy[1] = atan2(-R[2][0], R[0][0]);//pitch
+			rpy[2] = atan2(-R[1][2], R[1][1]);//yaw is sum of roll+yaw
+		}
+		else
+		{
+			rpy[0] = atan2(R[1][0], R[0][0]);//roll
+			s = sin(rpy[0]);
+			c = cos(rpy[0]);
+			rpy[1] = atan2(-R[2][0], c*R[0][0] + s*R[1][0]);//pitch
+			rpy[2] = atan2(s*R[0][2] - c*R[1][2], c*R[1][1] - s*R[0][1]);//yaw
+
+		}
+		break;
+	case 2://XYZ HLHN J.CRAIG method
+		rpy[1] = atan2(-R[2][0],sqrt(R[0][0]*R[0][0]+R[1][0]*R[1][0])); //pitch
+		if (fabs(fabs(rpy[1]) - R_PI / 2.0) < eps)
+		{
+			if (rpy[1] > 0) //pi/2
+			{
+				rpy[1] = R_PI / 2.0;
+				rpy[2] = 0.0;
+				rpy[0] = atan2(R[0][1],R[1][1]);
+			}
+			else//-pi/2
+			{
+				rpy[1] = -R_PI / 2.0;
+				rpy[2] = 0.0;
+				rpy[0] = -atan2(R[0][1], R[1][1]);
+			}
+		}
+		else
+		{
+			cp = cos(rpy[1]);
+			rpy[2] = atan2(R[1][0]/cp,R[0][0]/cp);
+			rpy[0] = atan2(R[2][1]/cp, R[2][2]/cp);
+		}
+		break;
+	case 3://orocos
+		cp=(R[0][0]+R[1][1]+R[2][2]-1)/2.0;
+		if (cp>1-(eps*(1e-6)))
+		{
+        	rpy[0] = 0;
+        	rpy[1] = 0;
+        	rpy[2] = 0;
+		}else if (cp<-1+(eps*(1e-6)))
+		{
+			rpy[0] = sqrt( (R[0][0]+1.0)/2);
+			rpy[1] = sqrt( (R[1][1]+1.0)/2);
+			rpy[2] = sqrt( (R[2][2]+1.0)/2);
+			if ( R[0][2]< 0) rpy[0] =-rpy[0] ;
+			if ( R[2][1]< 0) rpy[1] =-rpy[1] ;
+			if ( rpy[0]*rpy[1]*R[0][1] < 0) rpy[0]=-rpy[0];  // this last line can be necessary when z is 0
+			// z always >= 0
+			// if z equal to zero
+			rpy[0] = rpy[0]*R_PI;
+			rpy[1] = rpy[1]*R_PI;
+			rpy[2] = rpy[2]*R_PI;
+		}
+		else
+		{
+//			Q=acos(cp);
+//
+//	    	rpy[0] = Q*0.5*(R[2][1]-R[1][2])/sin(Q);
+//	    	rpy[1] = Q*0.5*(R[0][2]-R[2][0])/sin(Q);
+//	    	rpy[2] = Q*0.5*(R[1][0]-R[0][1])/sin(Q);
+
+
+			double angle;
+			double mod_axis;
+			double axisx, axisy, axisz;
+			axisx = R[2][1]-R[1][2];
+			axisy = R[0][2]-R[2][0];
+			axisz = R[1][0]-R[0][1];
+			mod_axis = sqrt(axisx*axisx+axisy*axisy+axisz*axisz);
+			angle = atan2(mod_axis/2,cp);
+			rpy[0] = angle*(R[2][1]-R[1][2])/mod_axis;
+			rpy[1] = angle*(R[0][2]-R[2][0])/mod_axis;
+			rpy[2] = angle*(R[1][0]-R[0][1])/mod_axis;
+		}
+
+
+		break;
+	case 4://单位四元数
+			m=0.5*sqrt(1+R[0][0]+R[1][1]+R[2][2]);
+			if (fabs(m)<eps)
+			{
+				break;
+			}
+			rpy[3]=m;
+			rpy[0]=(R[2][1]-R[1][2])/(4*rpy[3]);
+			rpy[1]=(R[0][2]-R[2][0])/(4*rpy[3]);
+			rpy[2]=(R[1][0]-R[0][1])/(4*rpy[3]);
+			break;
+	case 5: //matlab 机器人工具箱
+		 qs = sqrt((R[0][0]+R[1][1]+R[2][2])+1)/2.0;
+		 kx = R[2][1] - R[1][2];   // Oz - Ay
+		 ky =R[0][2] - R[2][0];   //Ax - Nz
+		 kz = R[1][0] - R[0][1];   // Ny - Ox
+
+		 if ((R[0][0]>=R[1][1]) && (R[0][0]>= R[2][2]) )
+		 {
+				kx1 = R[0][0]- R[1][1] - R[2][2] + 1; // Nx - Oy - Az + 1
+				ky1 = R[1][0] + R[0][1];          // Ny + Ox
+				kz1 = R[2][0]+ R[0][2];          // Nz + Ax
+				if (kx >= 0)
+				{
+					add=1;
+				}
+				else
+				{
+					add=0;
+				}
+		 }
+		 else if  (R[1][1]>= R[2][2])
+		 {
+		        kx1 = R[1][0]+ R[0][1];          //Ny + Ox
+		        ky1 = R[1][1]- R[0][0]- R[2][2] + 1; // Oy - Nx - Az + 1
+		        kz1 = R[2][1] + R[1][2];          // Oz + Ay
+				if (ky >= 0)
+				{
+					add=1;
+				}
+				else
+				{
+					add=0;
+				}
+		 }
+		else
+		{
+				kx1 = R[2][0] + R[0][2];          // Nz + Ax
+				ky1 = R[2][1]+ R[1][2];          //Oz + Ay
+				kz1 = R[2][2] - R[0][0] - R[1][1]+ 1; // Az - Nx - Oy + 1
+				if (kz >= 0)
+				{
+					add=1;
+				}
+				else
+				{
+					add=0;
+				}
+		}
+		 if( add)
+		 {
+				 kx = kx + kx1;
+				 ky = ky + ky1;
+				 kz = kz + kz1;
+		 }
+		 else
+		 {
+				 kx = kx - kx1;
+				 ky = ky - ky1;
+				 kz = kz - kz1;
+		 }
+		 nm=sqrt(kx*kx+ky*ky+kz*kz);
+		 if (nm<0.000001)
+		 {
+			 	 rpy[3]=1;rpy[0]=0;rpy[1]=0;rpy[2]=0;
+
+		 }
+		 else
+		 {
+			 	 s=sqrt(1-qs*qs)/nm;
+			 	rpy[3]=qs;rpy[0]=s*kx;rpy[1]=s*ky;rpy[2]=s*kz;
+
+		 }
+		break;
+	default:
+		break;
+	}
+
+}
+
+void BscanServer::rpy2tr(double* rpy, double R[3][3], int flag)
+{
+	double sx = 0;
+	double cx = 0;
+	double sy = 0;
+	double cy = 0;
+	double sz = 0;
+	double cz = 0;
+
+	double Q = 0;
+	double k[3];
+	double v=0;
+
+	/*
+	Rx = [
+	1   0    0
+	0   cx  -sx
+	0   sx   cx
+	];
+	Ry = [
+	cy  0   sy
+	0   1   0
+	-sy  0   cy
+	];
+	Rz = [
+	cz  -sz  0
+	sz   cz  0
+	0    0   1
+	];
+	*/
+	switch (flag)
+	{
+	case 0://XYZ order
+		sx = sin(rpy[0]);
+		cx = cos(rpy[0]);
+		sy = sin(rpy[1]);
+		cy = cos(rpy[1]);
+		sz = sin(rpy[2]);
+		cz = cos(rpy[2]);
+		//R=Rx*Ry*Rz
+		R[0][0] = cy*cz; R[0][1] = -cy*sz; R[0][2] = sy;
+		R[1][0] = cx*sz + cz*sx*sy; R[1][1] = cx*cz - sx*sy*sz; R[1][2] = -cy*sx;
+		R[2][0] = sx*sz - cx*cz*sy; R[2][1] = cz*sx + cx*sy*sz; R[2][2] = cx*cy;
+		break;
+	case 1://ZYX order
+		sx = sin(rpy[2]);
+		cx = cos(rpy[2]);
+		sy = sin(rpy[1]);
+		cy = cos(rpy[1]);
+		sz = sin(rpy[0]);
+		cz = cos(rpy[0]);
+		//R=Rz*Ry*Rx
+		R[0][0] = cy*cz; R[0][1] = cz*sx*sy - cx*sz; R[0][2] = sx*sz + cx*cz*sy;
+		R[1][0] = cy*sz; R[1][1] = cx*cz + sx*sy*sz; R[1][2] = cx*sy*sz - cz*sx;
+		R[2][0] = -sy; R[2][1] = cy*sx; R[2][2] = cx*cy;
+		break;
+	case 2://XYZ HLHN J.CRAIG method
+		sx = sin(rpy[0]);
+		cx = cos(rpy[0]);
+		sy = sin(rpy[1]);
+		cy = cos(rpy[1]);
+		sz = sin(rpy[2]);
+		cz = cos(rpy[2]);
+		//R=Rz*Ry*Rx
+		R[0][0] = cy*cz; R[0][1] = cz*sx*sy - cx*sz; R[0][2] = sx*sz + cx*cz*sy;
+		R[1][0] = cy*sz; R[1][1] = cx*cz + sx*sy*sz; R[1][2] = cx*sy*sz - cz*sx;
+		R[2][0] = -sy; R[2][1] = cy*sx; R[2][2] = cx*cy;
+		break;
+	case 3:
+		Q=sqrt(rpy[0]*rpy[0]+rpy[1]*rpy[1]+rpy[2]*rpy[2]);
+		if (Q<1e-10)
+		{
+	        R[0][0] = 1;	   R[0][1] = 0;	 R[0][2] = 0;
+	        R[1][0] = 0;    R[1][1] = 1;   R[1][2] = 0;
+	        R[2][0] = 0;	   R[2][1] = 0;   R[2][2] = 1;
+        	break;
+		}
+        k[0]=rpy[0]/Q;
+        k[1]=rpy[1]/Q;
+        k[2]=rpy[2]/Q;
+        sx=sin(Q);cx=cos(Q);v=1-cx;
+        R[0][0] = k[0]*k[0]*v + cx;			R[0][1] = k[0]*k[1]*v - k[2]*sx;	R[0][2] = k[0]*k[2]*v + k[1]*sx;
+        R[1][0] = k[0]*k[1]*v + k[2]*sx;	R[1][1] = k[1]*k[1]*v + cx;			R[1][2] = k[1]*k[2]*v - k[0]*sx;
+        R[2][0] = k[0]*k[2]*v - k[1]*sx;	R[2][1] = k[1]*k[2]*v + k[0]*sx;	R[2][2] = k[2]*k[2]*v + cx;
+		break;
+	case 4://单位四元数
+			R[0][0] = 1-2*rpy[1]*rpy[1]-2*rpy[2]*rpy[2]; R[0][1] = 2*(rpy[0]*rpy[1]-rpy[2]*rpy[3]); R[0][2] = 2*(rpy[0]*rpy[2]+rpy[1]*rpy[3]);
+			R[1][0] = 2*(rpy[0]*rpy[1]+rpy[2]*rpy[3]); R[1][1] = 1-2*rpy[0]*rpy[0]-2*rpy[2]*rpy[2]; R[1][2] = 2*(rpy[1]*rpy[2]-rpy[0]*rpy[3]);
+			R[2][0] = 2*(rpy[0]*rpy[2]-rpy[1]*rpy[3]); R[2][1] = 2*(rpy[1]*rpy[2]+rpy[0]*rpy[3]); R[2][2] = 1-2*rpy[0]*rpy[0]-2*rpy[1]*rpy[1];
+			break;
+	case 5: //matlab 机器人工具箱
+		    R[0][0] = 1-2*rpy[1]*rpy[1]-2*rpy[2]*rpy[2]; R[0][1] = 2*(rpy[0]*rpy[1]-rpy[2]*rpy[3]); R[0][2] = 2*(rpy[0]*rpy[2]+rpy[1]*rpy[3]);
+			R[1][0] = 2*(rpy[0]*rpy[1]+rpy[2]*rpy[3]); R[1][1] = 1-2*rpy[0]*rpy[0]-2*rpy[2]*rpy[2]; R[1][2] = 2*(rpy[1]*rpy[2]-rpy[0]*rpy[3]);
+			R[2][0] = 2*(rpy[0]*rpy[2]-rpy[1]*rpy[3]); R[2][1] = 2*(rpy[1]*rpy[2]+rpy[0]*rpy[3]); R[2][2] = 1-2*rpy[0]*rpy[0]-2*rpy[1]*rpy[1];
+		break;
+	default:
+		break;
+	}
+
+}
+
+
+}
