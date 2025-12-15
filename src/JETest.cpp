@@ -83,7 +83,7 @@ int main(int argc, char *argv[])
 
     printf("RobotSwitch\n");
     sleep(1);
-    // RobotSwitch(publisher, true);
+    RobotSwitch(publisher, true);
     sleep(1);
 
     printf("GetRobotState\n");
@@ -105,6 +105,15 @@ int main(int argc, char *argv[])
 
     printf("loop\n");
     ClearHistoricalData(subscriber);
+    // ========== 打开关节 CSV 文件并写表头 ==========
+    std::ofstream csv_joint_compare("joint_target_state_log.csv");
+    if (!csv_joint_compare.is_open())
+    {
+        std::cerr << "Failed to open csv_joint_compare.csv for writing!" << std::endl;
+        return 1;
+    }
+    csv_joint_compare << std::fixed << std::setprecision(6);
+    csv_joint_compare << "time,target_joint,state_joint\n";
 
     // ========== 打开关节 CSV 文件并写表头 ==========
     std::ofstream csv_joint("joint_log.csv");
@@ -114,7 +123,7 @@ int main(int argc, char *argv[])
         return 1;
     }
     csv_joint << std::fixed << std::setprecision(6);
-    csv_joint << "time,target_joint6,state_joint6\n";
+    csv_joint << "time,j0,j1,j2,j3,j4,j5,j6\n";
 
     // ========== 打开末端位姿 CSV 文件并写表头 ==========
     std::ofstream csv_cart("cartesian_log.csv");
@@ -127,29 +136,82 @@ int main(int argc, char *argv[])
     // 假设 Cartesian 向量为 [x, y, z, rx, ry, rz]
     csv_cart << "time,x,y,z,rx,ry,rz\n";
 
-    while (1)
+    // ========= 读取当前关节姿态，并先用 SetRobotJoint 到达初始关节位置 =========
+    // 关节id 对应的限位rad：
+    // joint 0
+    // int joint_idx = 0;
+    // double alpha = 0.6;
+    // double joint_max = +1.57 * alpha;
+    // double joint_min = -1.57 * alpha;
+    // joint 1
+    // double alpha = 1.0;
+    // int joint_idx = 1;
+    // double joint_max = 3.14 * alpha;
+    // double joint_min = 0 * alpha;
+    // joint 2
+    // double alpha = 1.0;
+    // int joint_idx = 2;
+    // double joint_max = 2.90 * alpha;
+    // double joint_min = -2.90 * alpha;
+    // joint 3
+    // double alpha = 1.0;
+    // int joint_idx = 3;
+    // double joint_max = 1.70 * alpha;
+    // double joint_min = -2.1 * alpha;
+    // joint 4
+    // double alpha = 1.0;
+    // int joint_idx = 4;
+    // double joint_max = 2.90 * alpha;
+    // double joint_min = -2.90 * alpha;
+    // joint 5
+    // double alpha = 1.0;
+    // int joint_idx = 5;
+    // double joint_max = 1.4 * alpha;
+    // double joint_min = -1.5 * alpha;
+    // joint 6
+    double alpha = 1.0;
+    int joint_idx = 6;
+    double joint_max = 2.90 * alpha;
+    double joint_min = -2.90 * alpha;
+
+    double joint_mid = (joint_max + joint_min)/2;
+    targt0_joint[joint_idx] = joint_mid;
+    A = joint_max - targt0_joint[joint_idx];
+
+    time = 2.0;  // 关节插补时间（单位秒，可按需要调整）
+    std::cout << "Move to initial joint pose with time = "
+              << time << " s" << std::endl;
+
+    SetRobotJoint(publisher, targt0_joint, time);
+
+    time +=2.0;
+    // ========= 开启一个余弦循环 =========
+    while (true)
     {
+        time += dt;
+        // ========== 获取机器人状态 ==========
         auto state = GetRobotState(subscriber); // 阻塞等待接收
 
-        // // 实际关节 6 位置
-        // std::vector<double> state_joint_vec =
-        //     state["Robot0"]["Joint"].get<std::vector<double>>();
-        // double state_joint6 = state_joint_vec[6];
+        // 实际关节 6 位置
+        std::vector<double> state_joint_vec =
+            state["Robot0"]["Joint"].get<std::vector<double>>();
 
         // 实际末端位姿
         std::vector<double> state_cart_vec =
             state["Robot0"]["Cartesian"].get<std::vector<double>>();
 
+        // ========== 发送控制指令 ==========
+        double state_joint = state_joint_vec[joint_idx];
         // // 目标关节 6 位置（正弦激励）
-        // targt0_joint[6] = A * std::cos(3.14 * 2 * f * time) - A + roobt0_joint[6];
+        targt0_joint[joint_idx] = A * std::cos(3.14 * 2 * f * time) + joint_mid;
 
-        // SetRobotJoint(publisher, targt0_joint, time);
+        SetRobotJoint(publisher, targt0_joint, time);
 
         // std::cout << "JETest: state_joint6: " << state_joint6
         //           << " published_joint6: " << targt0_joint[6] << std::endl;
 
         // ========== 写入关节 CSV ==========
-        // csv_joint << time << "," << targt0_joint[6] << "," << state_joint6 << "\n";
+        csv_joint_compare << time << "," << targt0_joint[joint_idx] << "," << state_joint << "\n";
 
         // ========== 写入末端位姿 CSV ==========
         if (state_cart_vec.size() >= 6)
@@ -168,13 +230,38 @@ int main(int argc, char *argv[])
             std::cerr << "Cartesian vector size < 6, size = "
                       << state_cart_vec.size() << std::endl;
         }
-        std::cout << state_cart_vec[0] << ","
+        std::cout << "get cart state: "
+                     << state_cart_vec[0] << ","
                      << state_cart_vec[1] << ","
                      << state_cart_vec[2] << ","
                      << state_cart_vec[3] << ","
                      << state_cart_vec[4] << ","
                      << state_cart_vec[5] << "\n";
-        time += dt;
+        if (state_joint_vec.size() >= 6)
+        {
+            csv_joint << time << ","
+                     << state_joint_vec[0] << ","
+                     << state_joint_vec[1] << ","
+                     << state_joint_vec[2] << ","
+                     << state_joint_vec[3] << ","
+                     << state_joint_vec[4] << ","
+                     << state_joint_vec[5] << ","
+                     << state_joint_vec[6] << "\n";
+        }
+        else
+        {
+            // 尺寸不对时给个提示
+            std::cerr << "joint vector size < 7, size = "
+                      << state_joint_vec.size() << std::endl;
+        }
+        std::cout << "get joint posi: "
+                     << state_joint_vec[0] << ","
+                     << state_joint_vec[1] << ","
+                     << state_joint_vec[2] << ","
+                     << state_joint_vec[3] << ","
+                     << state_joint_vec[4] << ","
+                     << state_joint_vec[5] << ","
+                     << state_joint_vec[6] << "\n";
     }
 
     printf("RobotSwitch\n");
