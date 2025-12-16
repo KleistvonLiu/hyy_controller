@@ -12,6 +12,11 @@
 #include <iomanip>
 #include <cmath>
 
+static inline double now_sec() {
+    using namespace std::chrono;
+    return duration<double>(steady_clock::now().time_since_epoch()).count();
+}
+
 void RobotSwitch(zmq::socket_t &pub,bool value)
 {
     nlohmann::ordered_json cmd_switch;
@@ -91,12 +96,12 @@ int main(int argc, char *argv[])
     printf("=====\n");
 
     // 初始关节和位姿
-    std::vector<double> roobt0_joint =
+    std::vector<double> robot0_joint =
         state["Robot0"]["Joint"].get<std::vector<double>>();
     std::vector<double> roobt0_cartesian =
         state["Robot0"]["Cartesian"].get<std::vector<double>>();
 
-    std::vector<double> targt0_joint = roobt0_joint;
+    std::vector<double> target0_joint = robot0_joint;
 
     double time = 0.0;
     double dt   = 0.01;
@@ -139,10 +144,10 @@ int main(int argc, char *argv[])
     // ========= 读取当前关节姿态，并先用 SetRobotJoint 到达初始关节位置 =========
     // 关节id 对应的限位rad：
     // joint 0
-    // int joint_idx = 0;
-    // double alpha = 0.6;
-    // double joint_max = +1.57 * alpha;
-    // double joint_min = -1.57 * alpha;
+    int joint_idx = 0;
+    double alpha = 0.88;
+    double joint_max = +1.57 * alpha;
+    double joint_min = -1.57 * alpha;
     // joint 1
     // double alpha = 1.0;
     // int joint_idx = 1;
@@ -169,22 +174,55 @@ int main(int argc, char *argv[])
     // double joint_max = 1.4 * alpha;
     // double joint_min = -1.5 * alpha;
     // joint 6
-    double alpha = 1.0;
-    int joint_idx = 6;
-    double joint_max = 2.90 * alpha;
-    double joint_min = -2.90 * alpha;
+    // double alpha = 1.0;
+    // int joint_idx = 6;
+    // double joint_max = 2.90 * alpha;
+    // double joint_min = -2.90 * alpha;
 
     double joint_mid = (joint_max + joint_min)/2;
-    targt0_joint[joint_idx] = joint_mid;
-    A = joint_max - targt0_joint[joint_idx];
+    
+    target0_joint[joint_idx] = joint_mid;
+    A = joint_max - target0_joint[joint_idx];
 
-    time = 2.0;  // 关节插补时间（单位秒，可按需要调整）
+    std::cout << "get initial joint posi: "
+                << robot0_joint[0] << ","
+                << robot0_joint[1] << ","
+                << robot0_joint[2] << ","
+                << robot0_joint[3] << ","
+                << robot0_joint[4] << ","
+                << robot0_joint[5] << ","
+                << robot0_joint[6] << "\n";
+    std::cout << "get target joint posi: "
+                << target0_joint[0] << ","
+                << target0_joint[1] << ","
+                << target0_joint[2] << ","
+                << target0_joint[3] << ","
+                << target0_joint[4] << ","
+                << target0_joint[5] << ","
+                << target0_joint[6] << "\n";
+
+    time = 0.1;  // 关节插补时间（单位秒，可按需要调整）
     std::cout << "Move to initial joint pose with time = "
               << time << " s" << std::endl;
+    int kInitialSteps = 1000;
+    int idx = 0;
+    while (idx++ < kInitialSteps) {
+        auto state = GetRobotState(subscriber); // 阻塞等待接收
+        SetRobotJoint(publisher, target0_joint, time);
+        time+=dt;
+    }
+    // SetRobotJoint(publisher, target0_joint, time);
+    // time +=11.0;
+    // double t0 = now_sec();
+    // sleep(10);
+    // double t1 = now_sec();
 
-    SetRobotJoint(publisher, targt0_joint, time);
+    // std::cout << std::fixed << std::setprecision(6);
+    // std::cout << "before: " << t0 << "\n";
+    // std::cout << "after : " << t1 << "\n";
+    // std::cout << "delta : " << (t1 - t0) << " sec\n";
 
-    time +=2.0;
+    double init_time = time;
     // ========= 开启一个余弦循环 =========
     while (true)
     {
@@ -203,15 +241,15 @@ int main(int argc, char *argv[])
         // ========== 发送控制指令 ==========
         double state_joint = state_joint_vec[joint_idx];
         // // 目标关节 6 位置（正弦激励）
-        targt0_joint[joint_idx] = A * std::cos(3.14 * 2 * f * time) + joint_mid;
+        target0_joint[joint_idx] = A * std::sin(M_PI * 2 * f * (time - init_time)) + joint_mid;
 
-        SetRobotJoint(publisher, targt0_joint, time);
+        SetRobotJoint(publisher, target0_joint, time);
 
         // std::cout << "JETest: state_joint6: " << state_joint6
-        //           << " published_joint6: " << targt0_joint[6] << std::endl;
+        //           << " published_joint6: " << target0_joint[6] << std::endl;
 
         // ========== 写入关节 CSV ==========
-        csv_joint_compare << time << "," << targt0_joint[joint_idx] << "," << state_joint << "\n";
+        csv_joint_compare << time << "," << target0_joint[joint_idx] << "," << state_joint << "\n";
 
         // ========== 写入末端位姿 CSV ==========
         if (state_cart_vec.size() >= 6)

@@ -22,14 +22,32 @@ extern void PluginMain();
 static zmq::context_t context(1);
 static zmq::socket_t publisher(context, zmq::socket_type::pub);
 static zmq::socket_t subscriber(context, zmq::socket_type::sub);
-std::thread* pub_th=nullptr;
-std::thread* sub_th=nullptr;
+static std::thread* pub_th=nullptr;
+static std::thread* sub_th=nullptr;
+static std::atomic<bool> is_stop(true);
+static std::thread* stop_th=nullptr;
+
+static void save_data()
+{
+    HYYRobotBase::RTimer timer;
+    HYYRobotBase::initUserTimer(&timer,1,1);
+    double data[14];
+    while (!is_stop.load())
+    {
+        HYYRobotBase::userTimer(&timer);
+        memset(data,0,sizeof(data));
+        HYYRobotBase::GetCurrentJoint(data, 0);
+        HYYRobotBase::GetCurrentLastTargetJoint(&(data[7]), 0);
+        HYYRobotBase::RSaveDataFast1("jeserver",1, 100, 14, data );
+    }
+}
+
 static void publisher_loop()
 {
     HYYRobotBase::RTimer timer;
     HYYRobotBase::initUserTimer(&timer,0,CYCLIE);//10ms
     nlohmann::ordered_json data;
-    std::cout << "JEServer: start publisher loop" << std::endl;
+    printf("start publisher_loop\n");
     while (true)
     {
         HYYRobotBase::userTimer(&timer);
@@ -42,9 +60,13 @@ static void publisher_loop()
             std::vector<double> joint(dof);
             HYYRobotBase::GetCurrentJoint(joint.data(), 0);
             data[std::string("Robot")+std::to_string(i)]["Joint"]=joint;
+            HYYRobotBase::GetCurrentLastTargetJoint(joint.data(), 0);
+            data[std::string("Robot")+std::to_string(i)]["TargetJoint"]=joint;
             std::vector<double> Cartesian(6);
             HYYRobotBase::GetCurrentCartesian(NULL,NULL,(HYYRobotBase::robpose*)Cartesian.data(), 0);
             data[std::string("Robot")+std::to_string(i)]["Cartesian"]=Cartesian;
+            HYYRobotBase::GetCurrentLastTargetCartesian(NULL,NULL,(HYYRobotBase::robpose*)Cartesian.data(), 0);
+            data[std::string("Robot")+std::to_string(i)]["TargetCartesian"]=Cartesian;
         }
         publisher.send(zmq::buffer("State " + data.dump()));
     }
@@ -52,7 +74,7 @@ static void publisher_loop()
 
 static void subscriber_loop()
 {
-    std::cout << "JEServer: start subscriber loop" << std::endl;
+    printf("start subscriber_loop\n");
     while(true)
     {
         zmq::message_t msg;
@@ -74,57 +96,42 @@ static void subscriber_loop()
 
                     for (int i=0;i<rn;i++)
                     {
-                        // HYYRobotBase::RobotStopRecover(i);
+                        is_stop.store(true);
+                        HYYRobotBase::RobotStopRecover(i);
                         HYYRobotBase::ServoEnd(i);
                         HYYRobotBase::RobotPoweroff(i);
+                        usleep(100000);
                         HYYRobotBase::RobotPower(i);
-                        HYYRobotBase::ServoStart(0.00001,0.5, i);
+                        HYYRobotBase::ServoStart(1,0.0001, i);
+                        is_stop.store(false);
+                        stop_th=new std::thread(save_data);
+                        stop_th->detach();
                     }
                 }
                 else
                 {
                     for (int i=0;i<rn;i++)
                     {
+                        is_stop.store(true);
                         HYYRobotBase::ServoEnd(i);
                         HYYRobotBase::RobotPoweroff(i);
                     } 
                 }
             } 
-	}else if("Joint"==topic)
-	{
-	    // std::cout << "JEServer: control with joint" << std::endl;
-	    for (int i = 0; i < rn; i++)
-	    {
-	        if (cmd_json.contains(std::string("Robot") + std::to_string(i)))
-	        {
-	            // std::cout << "JEServer: control with joint here, Robot" << i << std::endl;
-
-	            // 原有逻辑
-	            double time = cmd_json[std::string("Robot") + std::to_string(i)]["time"].get<double>();
-	            std::vector<double> joint =
-	                cmd_json[std::string("Robot") + std::to_string(i)]["joint"].get<std::vector<double>>();
-
-	            // ======= 新增调试输出：打印 data（joint 向量的内容） =======
-	            // std::cout << "[DEBUG] Robot" << i << " time = " << time << std::endl;
-	            // std::cout << "[DEBUG] Robot" << i << " joint.size() = " << joint.size() << std::endl;
-	            // std::cout << "[DEBUG] Robot" << i << " joint data = [";
-	            // for (size_t j = 0; j < joint.size(); ++j)
-	            // {
-	                // std::cout << joint[j];
-	                // if (j + 1 < joint.size())
-	                    // std::cout << ", ";
-	            // }
-	            // std::cout << "]" << std::endl;
-
-	            // 如果你想看指针地址（意义不大，一般不用）
-	            // std::cout << "[DEBUG] joint.data() ptr = " << static_cast<const void*>(joint.data()) << std::endl;
-	            // ================================================
-
-	            HYYRobotBase::robjoint jt;
-	            HYYRobotBase::init_robjoint(&jt, joint.data(), HYYRobotBase::robot_getDOF(i));
-	            HYYRobotBase::ServoJoint(&jt, time, i);
-	        }
-	    }
+        }else if("Joint"==topic)
+        {
+            for (int i=0;i<rn;i++)
+            {
+                if (cmd_json.contains(std::string("Robot")+std::to_string(i)))
+                {
+                    double time=cmd_json[std::string("Robot")+std::to_string(i)]["time"].get<double>();
+                    //printf("===%f\n",time);
+                    std::vector<double> joint=cmd_json[std::string("Robot")+std::to_string(i)]["joint"].get<std::vector<double>>();
+                    HYYRobotBase::robjoint jt;
+                    HYYRobotBase::init_robjoint(&jt,joint.data(),HYYRobotBase::robot_getDOF(i));
+                    HYYRobotBase::ServoJoint(&jt,time,i);
+                }
+            }
         }else if ("Cartesian"==topic)
         {
             for (int i=0;i<rn;i++)
@@ -136,9 +143,6 @@ static void subscriber_loop()
                     HYYRobotBase::robpose pt;
                     HYYRobotBase::init_robpose(&pt,cartesian.data(),cartesian.data()+3);
                     HYYRobotBase::ServoCartesian(&pt,time,NULL,NULL,i);
-
-                    // SETSPEED(sp,0.05,0.50);
-                    // HYYRobotBase::MoveJ(&pt,sp,NULL,NULL,NULL);
                 }
             }
         }
