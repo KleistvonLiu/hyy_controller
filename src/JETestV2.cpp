@@ -66,6 +66,80 @@ void SetRobotJoint(zmq::socket_t &pub, std::vector<double> &joint, double time)
 
 // ===================== 从 CSV 读取 waypoints =====================
 
+bool LoadJointsFromCsv(const std::string &csv_path,
+                          std::vector<std::vector<double>> &waypoints)
+{
+    std::ifstream ifs(csv_path);
+    if (!ifs.is_open())
+    {
+        std::cerr << "Failed to open csv file: " << csv_path << std::endl;
+        return false;
+    }
+
+    std::string line;
+
+    // 读取并丢弃第一行表头
+    if (!std::getline(ifs, line))
+    {
+        std::cerr << "Empty csv file: " << csv_path << std::endl;
+        return false;
+    }
+
+    while (std::getline(ifs, line))
+    {
+        if (line.empty())
+            continue;
+
+        std::stringstream ss(line);
+        std::string field;
+        std::vector<double> fields;
+
+        // 按逗号拆分一行
+        while (std::getline(ss, field, ','))
+        {
+            try
+            {
+                fields.push_back(std::stod(field));
+            }
+            catch (const std::exception &)
+            {
+                // 转换失败的字段直接丢弃整行
+                fields.clear();
+                break;
+            }
+        }
+
+        // 我们期望一行有 7 个数：time, x, y, z, rx, ry, rz
+        if (fields.size() < 7)
+            continue;
+
+        // 构造 [x,y,z,rx,ry,rz]
+        std::vector<double> pose(7);
+        pose[0] = fields[1]; // x
+        pose[1] = fields[2]; // y
+        pose[2] = fields[3]; // z
+        pose[3] = fields[4]; // rx
+        pose[4] = fields[5]; // ry
+        pose[5] = fields[6]; // rz
+        pose[6] = fields[7]; // joint7
+
+        waypoints.push_back(std::move(pose));
+    }
+
+    if (waypoints.empty())
+    {
+        std::cerr << "No valid waypoints loaded from " << csv_path << std::endl;
+        return false;
+    }
+
+    std::cout << "Loaded " << waypoints.size()
+              << " waypoints from " << csv_path << std::endl;
+    return true;
+}
+
+
+// ===================== 从 CSV 读取 waypoints =====================
+
 bool LoadWaypointsFromCsv(const std::string &csv_path,
                           std::vector<std::vector<double>> &waypoints)
 {
@@ -190,9 +264,11 @@ int main(int argc, char *argv[])
 
     // 3. 从 CSV 预设一组末端位姿
     std::string csv_path = (argc > 1) ? argv[1] : "cartesian_log.csv";
+    std::string joint_csv_path = (argc > 1) ? argv[1] : "joint_log.csv";
 
     std::vector<std::vector<double>> waypoints;
-    if (!LoadWaypointsFromCsv(csv_path, waypoints))
+    // if (!LoadWaypointsFromCsv(csv_path, waypoints))
+    if (!LoadJointsFromCsv(joint_csv_path, waypoints))
     {
         return 1;
     }
@@ -217,7 +293,8 @@ int main(int argc, char *argv[])
         }
         std::cout << "], time = " << move_time << "s" << std::endl;
 
-        SetRobotCartesian(publisher, target, move_time);
+        // SetRobotCartesian(publisher, target, move_time);
+        SetRobotJoint(publisher, target, move_time);
         move_time += dt;  // 如果希望每个点的 time 相同，可以去掉这一行
 
         // 以 ~100Hz 的节奏播放轨迹

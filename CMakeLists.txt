@@ -45,14 +45,14 @@ list(REMOVE_ITEM DIR_SRCS
 # add_library(ExternalDemo SHARED src/ExternalPlugin.cpp)
 # target_link_libraries(ExternalDemo RobotControl m pthread rt dl xml2)
 
-# add_library(JEServer SHARED src/JEServer.cpp)
-# target_link_libraries(JEServer RobotControl m pthread zmq rt dl xml2)
+add_library(JEServer SHARED src/JEServer.cpp)
+target_link_libraries(JEServer RobotControl m pthread zmq rt dl xml2)
 
-add_executable(JETest src/JETest.cpp)
-target_link_libraries(JETest zmq rt dl xml2)
+# add_executable(JETest src/JETest.cpp)
+# target_link_libraries(JETest zmq rt dl xml2)
 
-# add_executable(JETestV2 src/JETestV2.cpp)
-# target_link_libraries(JETestV2 zmq rt dl xml2)
+add_executable(JETestV2 src/JETestV2.cpp)
+target_link_libraries(JETestV2 zmq rt dl xml2)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wall")
 
