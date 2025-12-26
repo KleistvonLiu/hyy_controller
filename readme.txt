@@ -1,5 +1,6 @@
 cd ~/Work/HYYRobotX64GRIP/build
 
+cmake ..
 make -j$(nproc)
 
 sudo cp ./libJEServer.so /usr/lib/

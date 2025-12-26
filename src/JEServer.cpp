@@ -2,6 +2,7 @@
 #include <zmq.hpp>
 #include <string>
 #include <iostream>
+#include <fstream>   // ① 增加这一行
 #include <thread>
 #include "nlohmann/json.hpp"
 #include <vector>
@@ -74,6 +75,8 @@ static void publisher_loop()
 
 static void subscriber_loop()
 {
+    // 2 增加落盘
+    // static std::ofstream cart_log("cartesian_log.csv", std::ios::out | std::ios::app);
     printf("start subscriber_loop\n");
     while(true)
     {
@@ -132,14 +135,23 @@ static void subscriber_loop()
                     HYYRobotBase::ServoJoint(&jt,time,i);
                 }
             }
-        }else if ("Cartesian"==topic)
+        }
+        else if ("Cartesian"==topic)
         {
             for (int i=0;i<rn;i++)
             {
-                if (cmd_json.contains(std::string("Robot")+std::to_string(i)))
+                const std::string rk = std::string("Robot")+std::to_string(i);
+                if (cmd_json.contains(rk))
                 {
-                    double time=cmd_json[std::string("Robot")+std::to_string(i)]["time"].get<double>();
-                    std::vector<double> cartesian=cmd_json[std::string("Robot")+std::to_string(i)]["cartesian"].get<std::vector<double>>();
+                    double time=cmd_json[rk]["time"].get<double>();
+                    std::vector<double> cartesian=cmd_json[rk]["cartesian"].get<std::vector<double>>();
+
+                    // // ③ 增加：落盘（CSV：robot_id,time,c0,c1,...）
+                    // cart_log << i << "," << time;
+                    // for (double v : cartesian) cart_log << "," << v;
+                    // cart_log << "\n";
+                    // cart_log.flush();  // 最简单：每条都刷盘
+
                     HYYRobotBase::robpose pt;
                     HYYRobotBase::init_robpose(&pt,cartesian.data(),cartesian.data()+3);
                     HYYRobotBase::ServoCartesian(&pt,time,NULL,NULL,i);
