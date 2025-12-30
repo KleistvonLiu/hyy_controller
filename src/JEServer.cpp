@@ -1,4 +1,5 @@
 #include "HYYRobotInterface.h"
+#include "device_interface.h"
 #include <zmq.hpp>
 #include <string>
 #include <iostream>
@@ -46,29 +47,87 @@ static void save_data()
 static void publisher_loop()
 {
     HYYRobotBase::RTimer timer;
-    HYYRobotBase::initUserTimer(&timer,0,CYCLIE);//10ms
+    HYYRobotBase::initUserTimer(&timer, 0, CYCLIE); // 10ms
     nlohmann::ordered_json data;
+
+    // 参照示例：拿到 device_name，后续按 i 拿 robot_name（子设备名）
+    const char* device_name = HYYRobotBase::get_deviceName(0, nullptr);
+
     printf("start publisher_loop\n");
     while (true)
     {
         HYYRobotBase::userTimer(&timer);
-        int rn=HYYRobotBase::robot_getNUM();
-        for (int i=0;i<rn;i++)
+
+        int rn = HYYRobotBase::robot_getNUM();
+        for (int i = 0; i < rn; i++)
         {
-            data[std::string("Robot")+std::to_string(i)]["MoveState"]=HYYRobotBase::get_robot_move_state(i);
-            data[std::string("Robot")+std::to_string(i)]["PowerState"]=HYYRobotBase::GetRobotPowerState(i);
-            int dof=HYYRobotBase::robot_getDOF(i);
+            const std::string rk = std::string("Robot") + std::to_string(i);
+
+            data[rk]["MoveState"]  = HYYRobotBase::get_robot_move_state(i);
+            data[rk]["PowerState"] = HYYRobotBase::GetRobotPowerState(i);
+
+            int dof = HYYRobotBase::robot_getDOF(i);
+
+            // -------- Joint position / target --------
             std::vector<double> joint(dof);
-            HYYRobotBase::GetCurrentJoint(joint.data(), 0);
-            data[std::string("Robot")+std::to_string(i)]["Joint"]=joint;
-            HYYRobotBase::GetCurrentLastTargetJoint(joint.data(), 0);
-            data[std::string("Robot")+std::to_string(i)]["TargetJoint"]=joint;
+            std::vector<double> target_joint(dof);
+
+            // 修正：使用 i（对应每台机器人）
+            HYYRobotBase::GetCurrentJoint(joint.data(), i);
+            data[rk]["Joint"] = joint;
+
+            HYYRobotBase::GetCurrentLastTargetJoint(target_joint.data(), i);
+            data[rk]["TargetJoint"] = target_joint;
+
+            // -------- Joint velocity / torque (NEW) --------
+            // 参照示例：获取该 robot 的子设备名
+            const char* robot_name = HYYRobotBase::get_name_robot_device(device_name, i);
+
+            std::vector<double> joint_vel(dof, 0.0);
+            std::vector<double> joint_torque(dof, 0.0);
+
+            int vel_ret = 0;
+            int tq_ret  = 0;
+            if (robot_name != nullptr)
+            {
+                vel_ret = HYYRobotBase::GetGroupVelocity(robot_name, joint_vel.data());
+                tq_ret  = HYYRobotBase::GetGroupTorque(robot_name, joint_torque.data());
+            }
+            else
+            {
+                vel_ret = -1;
+                tq_ret  = -1;
+
+            }
+
+            // 失败时仍发布零向量，并打印日志（避免 JSON 缺字段导致下游解析不一致）
+            if (vel_ret < 0)
+            {
+                std::cerr << "[publisher_loop] GetGroupVelocity failed, robot_index="
+                          << i << ", robot_name=" << (robot_name ? robot_name : "null")
+                          << ", ret=" << vel_ret << std::endl;
+            }
+            if (tq_ret < 0)
+            {
+                std::cerr << "[publisher_loop] GetGroupTorque failed, robot_index="
+                          << i << ", robot_name=" << (robot_name ? robot_name : "null")
+                          << ", ret=" << tq_ret << std::endl;
+            }
+
+            data[rk]["JointVelocity"] = joint_vel;
+            data[rk]["JointTorque"]   = joint_torque;
+
+            // -------- Cartesian / target --------
             std::vector<double> Cartesian(6);
-            HYYRobotBase::GetCurrentCartesian(NULL,NULL,(HYYRobotBase::robpose*)Cartesian.data(), 0);
-            data[std::string("Robot")+std::to_string(i)]["Cartesian"]=Cartesian;
-            HYYRobotBase::GetCurrentLastTargetCartesian(NULL,NULL,(HYYRobotBase::robpose*)Cartesian.data(), 0);
-            data[std::string("Robot")+std::to_string(i)]["TargetCartesian"]=Cartesian;
+
+            // 修正：使用 i（对应每台机器人）
+            HYYRobotBase::GetCurrentCartesian(NULL, NULL, (HYYRobotBase::robpose*)Cartesian.data(), i);
+            data[rk]["Cartesian"] = Cartesian;
+
+            HYYRobotBase::GetCurrentLastTargetCartesian(NULL, NULL, (HYYRobotBase::robpose*)Cartesian.data(), i);
+            data[rk]["TargetCartesian"] = Cartesian;
         }
+
         publisher.send(zmq::buffer("State " + data.dump()));
     }
 }

@@ -7,6 +7,7 @@ enable_testing()
 include_directories(
     include
     include/user
+    include/DeviceDriver
 )
 
 aux_source_directory(src DIR_SRCS)
