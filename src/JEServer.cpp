@@ -290,18 +290,22 @@ static void publisher_loop()
 
             std::vector<double> joint_vel(dof, 0.0);
             std::vector<double> joint_torque(dof, 0.0);
+            std::vector<double> joint_sensor_torque(dof, 0.0);
 
             int vel_ret = 0;
             int tq_ret  = 0;
+            int stq_ret = 0;
             if (robot_name != nullptr)
             {
                 vel_ret = HYYRobotBase::GetGroupVelocity(robot_name, joint_vel.data());
                 tq_ret  = HYYRobotBase::GetGroupTorque(robot_name, joint_torque.data());
+                stq_ret = HYYRobotBase::GetGroupSensorTorque(robot_name, joint_sensor_torque.data());
             }
             else
             {
                 vel_ret = -1;
                 tq_ret  = -1;
+                stq_ret = -1;
 
             }
 
@@ -318,9 +322,16 @@ static void publisher_loop()
                           << i << ", robot_name=" << (robot_name ? robot_name : "null")
                           << ", ret=" << tq_ret << std::endl;
             }
+            if (stq_ret < 0)
+            {
+                std::cerr << "[publisher_loop] GetGroupSensorTorque failed, robot_index="
+                          << i << ", robot_name=" << (robot_name ? robot_name : "null")
+                          << ", ret=" << stq_ret << std::endl;
+            }
 
             data[rk]["JointVelocity"] = joint_vel;
             data[rk]["JointTorque"]   = joint_torque;
+            data[rk]["JointSensorTorque"] = joint_sensor_torque;
 
             // -------- Cartesian / target --------
             std::vector<double> Cartesian(6);
@@ -387,6 +398,7 @@ static void subscriber_loop()
             } 
         }else if("Joint"==topic)
         {
+            // std::cout << "received joint: " << std::endl;
             for (int i=0;i<rn;i++)
             {
                 const std::string rk = std::string("Robot")+std::to_string(i);
@@ -438,6 +450,7 @@ static void subscriber_loop()
         }
         else if ("Cartesian"==topic)
         {
+            // std::cout << "received joint: " << std::endl;
             for (int i=0;i<rn;i++)
             {
                 const std::string rk = std::string("Robot")+std::to_string(i);
@@ -515,6 +528,7 @@ void PluginMain()
     subscriber.set(zmq::sockopt::conflate, 1);   // 只保留最后一条
     subscriber.set(zmq::sockopt::subscribe, "Switch ");
     subscriber.set(zmq::sockopt::subscribe, "Cartesian ");  // 只收你需要的
+    subscriber.set(zmq::sockopt::subscribe, "Joint ");  // 只收你需要的
     sub_th=new std::thread(subscriber_loop);
     sub_th->detach();
 }
