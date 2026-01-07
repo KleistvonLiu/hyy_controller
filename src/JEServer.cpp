@@ -15,6 +15,8 @@
 #include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>
+#include <chrono>
+#include <iomanip>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -40,6 +42,15 @@ static std::thread* stop_th=nullptr;
 static const char* kEndEffectorPort = "/dev/ttyS1";
 static constexpr speed_t kEndEffectorBaud = B115200;
 static int end_effector_fd = -1;
+
+// Debounce for preset 99 (2 seconds)
+static std::atomic<int64_t> g_last_reinit_ms{-1};
+
+static inline int64_t now_steady_ms()
+{
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
 
 static int init_serial(const char* port, speed_t baudrate)
 {
@@ -178,6 +189,32 @@ static void end_effector_set_positions(uint8_t m1, uint8_t m2, uint8_t m3,
     send_end_effector_frame(payload);
 }
 
+static bool send_end_effector_raw_bytes(const std::vector<uint8_t>& bytes)
+{
+    if (end_effector_fd < 0)
+    {
+        std::cerr << "end effector serial not ready, skip raw command\n";
+        return false;
+    }
+
+    if (bytes.empty()) return true;
+
+    if (!write_all(end_effector_fd, bytes.data(), bytes.size()))
+    {
+        std::cerr << "end effector raw write failed: " << strerror(errno) << "\n";
+        return false;
+    }
+    return true;
+}
+
+static void end_effector_reinit()
+{
+    // 直接发送三个字节：02 FF 00
+    // 若你的协议需要加 55 AA + checksum，请改为：
+    // send_end_effector_frame({0x02, 0xFF, 0x00});
+    send_end_effector_raw_bytes({0x02, 0xFF, 0x00});
+}
+
 static void handle_end_effector_preset(int preset)
 {
     // std::cout << "handle_ee_preset \n";
@@ -216,6 +253,37 @@ static void handle_end_effector_preset(int preset)
         case 21:
             end_effector_three_finger(0x58);
             break;
+        case 99:
+        {
+            const int64_t now = now_steady_ms();
+
+            while (true)
+            {
+                int64_t last = g_last_reinit_ms.load(std::memory_order_relaxed);
+
+                // If executed once, ignore further commands within 2 seconds
+                if (last >= 0 && (now - last) < 2000)
+                {
+                    std::cerr << "[end_effector] reinit preset=99 ignored (cooldown), dt_ms="
+                            << (now - last) << "\n";
+                    break;
+                }
+
+                // Try to "claim" this execution window
+                if (g_last_reinit_ms.compare_exchange_weak(
+                        last, now,
+                        std::memory_order_relaxed,
+                        std::memory_order_relaxed))
+                {
+                    std::cerr << "[end_effector] reinit preset=99 execute, send 02 FF 00\n";
+                    end_effector_reinit();
+                    break;
+                }
+
+                // CAS failed: retry (another thread updated last)
+            }
+            break;
+        }
         default:
             std::cerr << "unknown end effector preset: " << preset << "\n";
             break;
