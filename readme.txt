@@ -1,7 +1,9 @@
-cd ~/Work/HYYRobotX64GRIP/build
-
-cmake ..
-make -j$(nproc)
+推荐默认（性能好且仍可调试符号）：
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build -j
+开启 LTO（通常值得试）：
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DHYY_ENABLE_LTO=ON
+cmake --build build -j
 
 sudo cp ./libJEServer.so /usr/lib/
 
