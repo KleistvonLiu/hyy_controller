@@ -30,6 +30,19 @@ extern void PluginMain();
 
 #define CYCLIE 10
 
+/// log相关
+#ifndef JOINT_DEBUG_LOG
+#define JOINT_DEBUG_LOG 0
+#endif
+
+#if JOINT_DEBUG_LOG
+#define JLOG(msg) do { std::cout << msg << std::endl; } while(0)
+#define JERR(msg) do { std::cerr << msg << std::endl; } while(0)
+#else
+#define JLOG(msg) do {} while(0)
+#define JERR(msg) do {} while(0)
+#endif
+
 static zmq::context_t context(1);
 static zmq::socket_t publisher(context, zmq::socket_type::pub);
 static zmq::socket_t subscriber(context, zmq::socket_type::sub);
@@ -429,8 +442,10 @@ static void subscriber_loop()
         auto pos = cmd.find(' ');
         std::string topic = cmd.substr(0, pos);
         nlohmann::ordered_json cmd_json = nlohmann::json::parse(cmd.substr(pos + 1));
-        // std::cout<<cmd_json.dump(4)<<std::endl;
-        // std::cout<<topic<<std::endl;
+#if JOINT_DEBUG_LOG
+        std::cout<<cmd_json.dump(4)<<std::endl;
+        std::cout<<topic<<std::endl;
+#endif
         int rn=HYYRobotBase::robot_getNUM();
         if ("Switch"==topic)
         {
@@ -466,53 +481,102 @@ static void subscriber_loop()
             } 
         }else if("Joint"==topic)
         {
-            // std::cout << "received joint: " << std::endl;
-            for (int i=0;i<rn;i++)
-            {
-                const std::string rk = std::string("Robot")+std::to_string(i);
-                if (cmd_json.contains(rk))
-                {
-                    if (!cmd_json[rk].contains("time") || !cmd_json[rk]["time"].is_number())
-                    {
-                        std::cerr << "[Joint] missing/invalid time for " << rk << "\n";
-                        continue;
-                    }
-                    if (!cmd_json[rk].contains("joint") || !cmd_json[rk]["joint"].is_array())
-                    {
-                        std::cerr << "[Joint] missing/invalid joint for " << rk << "\n";
-                        continue;
-                    }
-                    double time=cmd_json[rk]["time"].get<double>();
-                    //printf("===%f\n",time);
-                    std::vector<double> joint=cmd_json[rk]["joint"].get<std::vector<double>>();
-                    HYYRobotBase::robjoint jt;
-                    HYYRobotBase::init_robjoint(&jt,joint.data(),HYYRobotBase::robot_getDOF(i));
-                    HYYRobotBase::ServoJoint(&jt,time,i);
+            JLOG("[Joint] received joint: rn=" << rn);
 
-                    if (cmd_json[rk].contains("end_effector"))
+            auto vec_to_string = [](const std::vector<double>& v) -> std::string {
+                std::ostringstream oss;
+                oss << "[";
+                for (size_t k = 0; k < v.size(); ++k) {
+                    oss << std::fixed << std::setprecision(6) << v[k];
+                    if (k + 1 < v.size()) oss << ", ";
+                }
+                oss << "]";
+                return oss.str();
+            };
+
+            for (int i = 0; i < rn; i++)
+            {
+                const std::string rk = std::string("Robot") + std::to_string(i);
+
+                if (!cmd_json.contains(rk)) {
+                    JERR("[Joint] " << rk << " not found in cmd_json (skip). keys=" << cmd_json.dump());
+                    continue;
+                }
+
+                // 打印该 robot 的原始片段（必要时你也可以注释掉，避免太多输出）
+                JLOG("[Joint] " << rk << " payload=" << cmd_json[rk].dump());
+
+                if (!cmd_json[rk].contains("time") || !cmd_json[rk]["time"].is_number())
+                {
+                    JERR("[Joint] missing/invalid time for " << rk << ", payload=" << cmd_json[rk].dump());
+                    continue;
+                }
+                if (!cmd_json[rk].contains("joint") || !cmd_json[rk]["joint"].is_array())
+                {
+                    JERR("[Joint] missing/invalid joint for " << rk << ", payload=" << cmd_json[rk].dump());
+                    continue;
+                }
+
+                double time = cmd_json[rk]["time"].get<double>();
+                std::vector<double> joint = cmd_json[rk]["joint"].get<std::vector<double>>();
+
+                const int dof = HYYRobotBase::robot_getDOF(i);
+
+                JLOG("[Joint] " << rk
+                    << " time=" << std::fixed << std::setprecision(6) << time
+                    << " dof=" << dof
+                    << " joint.size=" << joint.size()
+                    << " joint=" << vec_to_string(joint));
+
+                if (static_cast<int>(joint.size()) < dof) {
+                    JERR("[Joint] " << rk << " joint.size < dof, will still call init_robjoint (risk).");
+                } else if (static_cast<int>(joint.size()) > dof) {
+                    JERR("[Joint] " << rk << " joint.size > dof, extra elements will be ignored by init_robjoint? (please confirm).");
+                }
+
+                HYYRobotBase::robjoint jt;
+                HYYRobotBase::init_robjoint(&jt, joint.data(), dof);
+
+                JLOG("[Joint] " << rk << " call ServoJoint(time=" << std::fixed << std::setprecision(6) << time
+                    << ", idx=" << i << ")");
+                HYYRobotBase::ServoJoint(&jt, time, i);
+                JLOG("[Joint] " << rk << " ServoJoint done.");
+
+                if (cmd_json[rk].contains("end_effector"))
+                {
+                    const auto& ee = cmd_json[rk]["end_effector"];
+                    JLOG("[Joint] " << rk << " end_effector payload=" << ee.dump());
+
+                    if (ee.contains("mode") && ee["mode"].is_number_integer())
                     {
-                        const auto& ee = cmd_json[rk]["end_effector"];
-                        if (ee.contains("mode") && ee["mode"].is_number_integer())
+                        int mode = ee["mode"].get<int>();
+                        JLOG("[Joint] " << rk << " end_effector.mode=" << mode);
+
+                        if (mode == 0 && ee.contains("position") && ee["position"].is_number())
                         {
-                            int mode = ee["mode"].get<int>();
-                            if (mode == 0 && ee.contains("position") && ee["position"].is_number())
-                            {
-                                handle_end_effector_position(ee["position"].get<double>());
-                            }
-                            else if (mode == 1 && ee.contains("preset") && ee["preset"].is_number_integer())
-                            {
-                                handle_end_effector_preset(ee["preset"].get<int>());
-                            }
-                            else
-                            {
-                                std::cerr << "[Joint] end_effector missing/invalid fields for " << rk << "\n";
-                            }
+                            double pos = ee["position"].get<double>();
+                            JLOG("[Joint] " << rk << " end_effector.position=" << std::fixed << std::setprecision(6) << pos);
+                            handle_end_effector_position(pos);
+                        }
+                        else if (mode == 1 && ee.contains("preset") && ee["preset"].is_number_integer())
+                        {
+                            int preset = ee["preset"].get<int>();
+                            JLOG("[Joint] " << rk << " end_effector.preset=" << preset);
+                            handle_end_effector_preset(preset);
                         }
                         else
                         {
-                            std::cerr << "[Joint] end_effector missing/invalid mode for " << rk << "\n";
+                            JERR("[Joint] end_effector missing/invalid fields for " << rk << ", ee=" << ee.dump());
                         }
                     }
+                    else
+                    {
+                        JERR("[Joint] end_effector missing/invalid mode for " << rk << ", ee=" << ee.dump());
+                    }
+                }
+                else
+                {
+                    JLOG("[Joint] " << rk << " end_effector not present.");
                 }
             }
         }

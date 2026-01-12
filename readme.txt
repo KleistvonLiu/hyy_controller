@@ -5,7 +5,7 @@ cmake --build build -j
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DHYY_ENABLE_LTO=ON
 cmake --build build -j
 
-sudo cp ./libJEServer.so /usr/lib/
+sudo cp ./build/libJEServer.so /usr/lib/
 
 scp robot@192.168.0.99://home/robot/Work/HYYRobotX64GRIP/build/JETestV2 /home/kleist/Documents/Code/temp
 scp robot@192.168.0.99://home/robot/Work/HYYRobotX64GRIP/build/JETestV2 /home/wangyunhao/code/
