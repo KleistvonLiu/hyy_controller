@@ -57,6 +57,7 @@ include_directories(
     include
     include/user
     include/DeviceDriver
+    include/JeComm
 )
 
 aux_source_directory(src DIR_SRCS)
@@ -95,7 +96,12 @@ list(REMOVE_ITEM DIR_SRCS
 # add_library(ExternalDemo SHARED src/ExternalPlugin.cpp)
 # target_link_libraries(ExternalDemo RobotControl m pthread rt dl xml2)
 
-add_library(JEServer SHARED src/JEServer.cpp)
+add_library(JEServer SHARED
+    src/JEServer.cpp
+    src/JeComm/dh_device.cpp
+    src/JeComm/dh_transport.cpp
+    src/JeComm/end_effector_device.cpp
+)
 target_link_libraries(JEServer RobotControl m pthread zmq rt dl xml2)
 
 # add_executable(JETest src/JETest.cpp)

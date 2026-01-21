@@ -1,5 +1,6 @@
 #include "HYYRobotInterface.h"
 #include "device_interface.h"
+#include "end_effector_device.h"
 #include <zmq.hpp>
 #include <string>
 #include <iostream>
@@ -8,14 +9,9 @@
 #include "nlohmann/json.hpp"
 #include <vector>
 #include <atomic>
-#include <cmath>
-#include <cstdint>
-#include <cerrno>
 #include <cstring>
-#include <fcntl.h>
-#include <termios.h>
+#include <memory>
 #include <unistd.h>
-#include <chrono>
 #include <iomanip>
 #ifdef __cplusplus
 extern "C" {
@@ -53,266 +49,17 @@ static std::thread* stop_th=nullptr;
 
 // End effector serial config (adjust port if needed)
 static const char* kEndEffectorPort = "/dev/ttyS1";
-static constexpr speed_t kEndEffectorBaud = B115200;
-static int end_effector_fd = -1;
+static constexpr int kEndEffectorBaud = 115200;
+static std::unique_ptr<EndEffectorDevice> end_effector_device;
 
-// Debounce for preset 99 (2 seconds)
-static std::atomic<int64_t> g_last_reinit_ms{-1};
-
-static inline int64_t now_steady_ms()
+static EndEffectorDevice* get_end_effector()
 {
-    using namespace std::chrono;
-    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
-}
-
-static int init_serial(const char* port, speed_t baudrate)
-{
-    int fd = open(port, O_RDWR | O_NOCTTY | O_SYNC);
-    if (fd < 0)
-    {
-        std::cerr << "open serial failed: " << port << " err=" << strerror(errno) << "\n";
-        return -1;
-    }
-
-    struct termios tty;
-    memset(&tty, 0, sizeof tty);
-    if (tcgetattr(fd, &tty) != 0)
-    {
-        std::cerr << "tcgetattr failed: " << strerror(errno) << "\n";
-        close(fd);
-        return -1;
-    }
-
-    cfsetospeed(&tty, baudrate);
-    cfsetispeed(&tty, baudrate);
-
-    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
-    tty.c_iflag &= ~IGNBRK;
-    tty.c_lflag = 0;
-    tty.c_oflag = 0;
-    tty.c_cc[VMIN] = 0;
-    tty.c_cc[VTIME] = 5;
-
-    tty.c_iflag &= ~(IXON | IXOFF | IXANY);
-    tty.c_cflag |= (CLOCAL | CREAD);
-    tty.c_cflag &= ~(PARENB | PARODD);
-    tty.c_cflag &= ~CSTOPB;
-    tty.c_cflag &= ~CRTSCTS;
-
-    if (tcsetattr(fd, TCSANOW, &tty) != 0)
-    {
-        std::cerr << "tcsetattr failed: " << strerror(errno) << "\n";
-        close(fd);
-        return -1;
-    }
-
-    return fd;
-}
-
-static uint8_t checksum_sum(const std::vector<uint8_t>& payload)
-{
-    uint32_t sum = 0;
-    for (uint8_t b : payload)
-    {
-        sum += b;
-    }
-    return static_cast<uint8_t>(sum & 0xFF);
-}
-
-static bool write_all(int fd, const uint8_t* data, size_t len)
-{
-    size_t off = 0;
-    while (off < len)
-    {
-        ssize_t n = ::write(fd, data + off, len - off);
-        if (n < 0)
-        {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        off += (size_t)n;
-    }
-    return true;
-}
-
-static bool send_end_effector_frame(const std::vector<uint8_t>& payload)
-{
-    if (end_effector_fd < 0)
+    if (!end_effector_device)
     {
         std::cerr << "end effector serial not ready, skip command\n";
-        return false;
+        return nullptr;
     }
-
-    std::vector<uint8_t> frame;
-    frame.reserve(payload.size() + 3);
-    frame.push_back(0x55);
-    frame.push_back(0xAA);
-    frame.insert(frame.end(), payload.begin(), payload.end());
-    frame.push_back(checksum_sum(payload));
-
-    if (!write_all(end_effector_fd, frame.data(), frame.size())) {
-        std::cerr << "end effector write failed: " << strerror(errno) << "\n";
-        return false;
-    }
-    return true;
-}
-
-static void end_effector_stop_all()
-{
-    // 55 AA 05 06 01 02 03 04 05 06 20
-    send_end_effector_frame({0x05, 0x06, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06});
-}
-
-static void end_effector_stop_motor(uint8_t motor_id)
-{
-    // 55 AA 05 01 <ID> <checksum>
-    send_end_effector_frame({0x05, 0x01, motor_id});
-}
-
-static void end_effector_two_finger(uint8_t percent)
-{
-    std::cout << "send percent: 0x"
-            << std::hex << std::setw(2) << std::setfill('0')
-            << static_cast<int>(percent)
-            << std::dec << std::endl;
-    // 55 AA 09 <percent> 00 <checksum>
-    send_end_effector_frame({0x09, percent, 0x00});
-}
-
-static void end_effector_three_finger(uint8_t percent)
-{
-    std::cout << "send percent: 0x"
-            << std::hex << std::setw(2) << std::setfill('0')
-            << static_cast<int>(percent)
-            << std::dec << std::endl;
-    // 55 AA 0A <percent> 00 <checksum>
-    send_end_effector_frame({0x0A, percent, 0x00});
-}
-
-static void end_effector_set_positions(uint8_t m1, uint8_t m2, uint8_t m3,
-                                       uint8_t m4, uint8_t m5, uint16_t m6)
-{
-    // 55 AA 03 06 01 02 03 04 05 06 m1 m2 m3 m4 m5 m6_hi m6_lo <checksum>
-    std::vector<uint8_t> payload = {
-        0x03, 0x06, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
-        m1, m2, m3, m4, m5,
-        static_cast<uint8_t>((m6 >> 8) & 0xFF),
-        static_cast<uint8_t>(m6 & 0xFF)
-    };
-    send_end_effector_frame(payload);
-}
-
-static bool send_end_effector_raw_bytes(const std::vector<uint8_t>& bytes)
-{
-    if (end_effector_fd < 0)
-    {
-        std::cerr << "end effector serial not ready, skip raw command\n";
-        return false;
-    }
-
-    if (bytes.empty()) return true;
-
-    if (!write_all(end_effector_fd, bytes.data(), bytes.size()))
-    {
-        std::cerr << "end effector raw write failed: " << strerror(errno) << "\n";
-        return false;
-    }
-    return true;
-}
-
-static void end_effector_reinit()
-{
-    // 直接发送三个字节：02 FF 00
-    // 若你的协议需要加 55 AA + checksum，请改为：
-    // send_end_effector_frame({0x02, 0xFF, 0x00});
-    send_end_effector_raw_bytes({0x02, 0xFF, 0x00});
-}
-
-static void handle_end_effector_preset(int preset)
-{
-    // std::cout << "handle_ee_preset \n";
-    switch (preset)
-    {
-        case 0:
-            end_effector_stop_all();
-            break;
-        case 1:
-            end_effector_stop_motor(0x01);
-            break;
-        case 2:
-            end_effector_stop_motor(0x02);
-            break;
-        case 3:
-            end_effector_stop_motor(0x03);
-            break;
-        case 4:
-            end_effector_stop_motor(0x04);
-            break;
-        case 5:
-            end_effector_stop_motor(0x05);
-            break;
-        case 6:
-            end_effector_stop_motor(0x06);
-            break;
-        case 10:
-            end_effector_two_finger(0x00);
-            break;
-        case 11:
-            end_effector_two_finger(0x47);
-            break;
-        case 20:
-            end_effector_three_finger(0x00);
-            break;
-        case 21:
-            end_effector_three_finger(0x58);
-            break;
-        case 99:
-        {
-            const int64_t now = now_steady_ms();
-
-            while (true)
-            {
-                int64_t last = g_last_reinit_ms.load(std::memory_order_relaxed);
-
-                // If executed once, ignore further commands within 2 seconds
-                if (last >= 0 && (now - last) < 2000)
-                {
-                    std::cerr << "[end_effector] reinit preset=99 ignored (cooldown), dt_ms="
-                            << (now - last) << "\n";
-                    break;
-                }
-
-                // Try to "claim" this execution window
-                if (g_last_reinit_ms.compare_exchange_weak(
-                        last, now,
-                        std::memory_order_relaxed,
-                        std::memory_order_relaxed))
-                {
-                    std::cerr << "[end_effector] reinit preset=99 execute, send 02 FF 00\n";
-                    end_effector_reinit();
-                    break;
-                }
-
-                // CAS failed: retry (another thread updated last)
-            }
-            break;
-        }
-        default:
-            std::cerr << "unknown end effector preset: " << preset << "\n";
-            break;
-    }
-}
-
-static void handle_end_effector_position(double position)
-{
-    // std::cout << "handle_ee_position \n";
-
-    int pos = static_cast<int>(std::lround(position));
-    if (pos < 0) pos = 0;
-    if (pos > 2000) pos = 2000;
-
-    // motor6 uses 0~2000, other motors keep at 0 by default
-    end_effector_set_positions(0, 0, 0, 0, 0, static_cast<uint16_t>(pos));
+    return end_effector_device.get();
 }
 
 static void save_data()
@@ -556,13 +303,15 @@ static void subscriber_loop()
                         {
                             double pos = ee["position"].get<double>();
                             JLOG("[Joint] " << rk << " end_effector.position=" << std::fixed << std::setprecision(6) << pos);
-                            handle_end_effector_position(pos);
+                            if (EndEffectorDevice* ee = get_end_effector())
+                                ee->HandlePosition(pos);
                         }
                         else if (mode == 1 && ee.contains("preset") && ee["preset"].is_number_integer())
                         {
                             int preset = ee["preset"].get<int>();
                             JLOG("[Joint] " << rk << " end_effector.preset=" << preset);
-                            handle_end_effector_preset(preset);
+                            if (EndEffectorDevice* ee = get_end_effector())
+                                ee->HandlePreset(preset);
                         }
                         else
                         {
@@ -620,11 +369,13 @@ static void subscriber_loop()
                             int mode = ee["mode"].get<int>();
                             if (mode == 0 && ee.contains("position") && ee["position"].is_number())
                             {
-                                handle_end_effector_position(ee["position"].get<double>());
+                                if (EndEffectorDevice* ee_dev = get_end_effector())
+                                    ee_dev->HandlePosition(ee["position"].get<double>());
                             }
                             else if (mode == 1 && ee.contains("preset") && ee["preset"].is_number_integer())
                             {
-                                handle_end_effector_preset(ee["preset"].get<int>());
+                                if (EndEffectorDevice* ee_dev = get_end_effector())
+                                    ee_dev->HandlePreset(ee["preset"].get<int>());
                             }
                             else
                             {
@@ -644,10 +395,13 @@ static void subscriber_loop()
 
 void PluginMain()
 {
-    end_effector_fd = init_serial(kEndEffectorPort, kEndEffectorBaud);
-    if (end_effector_fd < 0)
+    SerialOptions ee_serial_opts(0, 5, SerialOptions::kProfileJEServerLegacy);
+    end_effector_device = std::unique_ptr<EndEffectorDevice>(
+        new EndEffectorDevice(kEndEffectorPort, kEndEffectorBaud, ee_serial_opts));
+    if (!end_effector_device->Open())
     {
         std::cerr << "end effector serial init failed, end effector disabled\n";
+        end_effector_device.reset();
     }
     publisher.set(zmq::sockopt::sndhwm, 0);  // 0 表示无限小队列，但行为是：不能缓存
     publisher.set(zmq::sockopt::immediate, 1);  // SUB 未连接时直接丢弃
