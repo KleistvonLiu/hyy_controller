@@ -54,7 +54,7 @@ static constexpr int kEndEffectorBaud = 115200;
 static std::unique_ptr<EndEffectorDevice> end_effector_device;
 
 // DH Modbus gripper config (adjust port/id if needed)
-static const char* kGripperPort = "/dev/ttyS0";
+static const char* kGripperPort = "/dev/ttyUSB0";
 static constexpr int kGripperBaud = 115200;
 static constexpr int kGripperId = 1;
 static std::unique_ptr<DH_Modbus_Gripper> dh_gripper;
@@ -88,7 +88,7 @@ static void handle_bound_end_effector(int robot_index,
                                       const char* context,
                                       bool debug_log)
 {
-    std::cout << "Here: " << robot_index << std::endl;
+    // std::cout << "Here: " << robot_index << std::endl;
     auto log_err = [&](const std::string& msg) {
         if (debug_log)
             JERR(msg);
@@ -124,7 +124,7 @@ static void handle_bound_end_effector(int robot_index,
 
     if (robot_index == kRobotIndexGripper)
     {
-        std::cout << "Here: " << ee << std::endl;
+        // std::cout << "Here: " << ee << std::endl;
         DH_Modbus_Gripper* gripper = get_gripper();
         if (!gripper)
         {
@@ -141,7 +141,8 @@ static void handle_bound_end_effector(int robot_index,
         }
         if (ee.contains("position") && ee["position"].is_number())
         {
-            int pos = static_cast<int>(ee["position"].get<double>());
+            int pos = static_cast<int>(ee["position"].get<double>() * 1000);
+            // std::cout << "control gripper position: " << pos << std::endl;
             if (!gripper->SetTargetPosition(pos))
                 log_err(std::string(context) + " gripper set position failed");
             handled = true;
@@ -477,9 +478,9 @@ void PluginMain()
         if (initstate != DH_Modbus_Gripper::S_INIT_FINISHED)
         {
             dh_gripper->Initialization();
-            std::cout << "Send grip init" << std::endl;
+            std::cout << "Trying to init gripper" << std::endl;
 
-            const int max_try = 200; // 200 * 50ms = 10s
+            const int max_try = 40; // 200 * 50ms = 10s
             for (int i = 0; i < max_try; ++i)
             {
                 ok = dh_gripper->GetInitState(initstate);
@@ -488,6 +489,7 @@ void PluginMain()
                     break;
                 usleep(50000);
             }
+            std::cout << "Gripper init succeeded, " << initstate << std::endl;
         }
     }
     publisher.set(zmq::sockopt::sndhwm, 0);  // 0 表示无限小队列，但行为是：不能缓存

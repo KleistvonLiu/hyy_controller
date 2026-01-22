@@ -105,7 +105,7 @@ void EndEffectorDevice::StopMotor(uint8_t motor_id)
 
 void EndEffectorDevice::TwoFinger(uint8_t percent)
 {
-    std::cout << "send percent: 0x"
+    std::cout << "TwoFinger send percent: 0x"
             << std::hex << std::setw(2) << std::setfill('0')
             << static_cast<int>(percent)
             << std::dec << std::endl;
@@ -115,7 +115,7 @@ void EndEffectorDevice::TwoFinger(uint8_t percent)
 
 void EndEffectorDevice::ThreeFinger(uint8_t percent)
 {
-    std::cout << "send percent: 0x"
+    std::cout << "ThreeFinger send percent: 0x"
             << std::hex << std::setw(2) << std::setfill('0')
             << static_cast<int>(percent)
             << std::dec << std::endl;
