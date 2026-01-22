@@ -1,6 +1,7 @@
 #include "HYYRobotInterface.h"
 #include "device_interface.h"
 #include "end_effector_device.h"
+#include "dh_modbus_gripper.h"
 #include <zmq.hpp>
 #include <string>
 #include <iostream>
@@ -52,6 +53,16 @@ static const char* kEndEffectorPort = "/dev/ttyS1";
 static constexpr int kEndEffectorBaud = 115200;
 static std::unique_ptr<EndEffectorDevice> end_effector_device;
 
+// DH Modbus gripper config (adjust port/id if needed)
+static const char* kGripperPort = "/dev/ttyS0";
+static constexpr int kGripperBaud = 115200;
+static constexpr int kGripperId = 1;
+static std::unique_ptr<DH_Modbus_Gripper> dh_gripper;
+
+// Binding: Robot1 -> EndEffectorDevice, Robot0 -> Gripper
+static constexpr int kRobotIndexGripper = 0;
+static constexpr int kRobotIndexEndEffector = 1;
+
 static EndEffectorDevice* get_end_effector()
 {
     if (!end_effector_device)
@@ -60,6 +71,102 @@ static EndEffectorDevice* get_end_effector()
         return nullptr;
     }
     return end_effector_device.get();
+}
+
+static DH_Modbus_Gripper* get_gripper()
+{
+    if (!dh_gripper)
+    {
+        std::cerr << "gripper not ready, skip command\n";
+        return nullptr;
+    }
+    return dh_gripper.get();
+}
+
+static void handle_bound_end_effector(int robot_index,
+                                      const nlohmann::ordered_json& ee,
+                                      const char* context,
+                                      bool debug_log)
+{
+    std::cout << "Here: " << robot_index << std::endl;
+    auto log_err = [&](const std::string& msg) {
+        if (debug_log)
+            JERR(msg);
+        else
+            std::cerr << msg << std::endl;
+    };
+
+    if (robot_index == kRobotIndexEndEffector)
+    {
+        if (!ee.contains("mode") || !ee["mode"].is_number_integer())
+        {
+            log_err(std::string(context) + " end_effector missing/invalid mode");
+            return;
+        }
+
+        int mode = ee["mode"].get<int>();
+        if (mode == 0 && ee.contains("position") && ee["position"].is_number())
+        {
+            if (EndEffectorDevice* ee_dev = get_end_effector())
+                ee_dev->HandlePosition(ee["position"].get<double>());
+        }
+        else if (mode == 1 && ee.contains("preset") && ee["preset"].is_number_integer())
+        {
+            if (EndEffectorDevice* ee_dev = get_end_effector())
+                ee_dev->HandlePreset(ee["preset"].get<int>());
+        }
+        else
+        {
+            log_err(std::string(context) + " end_effector missing/invalid fields");
+        }
+        return;
+    }
+
+    if (robot_index == kRobotIndexGripper)
+    {
+        std::cout << "Here: " << ee << std::endl;
+        DH_Modbus_Gripper* gripper = get_gripper();
+        if (!gripper)
+        {
+            log_err(std::string(context) + " gripper not ready");
+            return;
+        }
+
+        bool handled = false;
+        if (ee.contains("init") && ee["init"].is_boolean() && ee["init"].get<bool>())
+        {
+            if (!gripper->Initialization())
+                log_err(std::string(context) + " gripper init failed");
+            handled = true;
+        }
+        if (ee.contains("position") && ee["position"].is_number())
+        {
+            int pos = static_cast<int>(ee["position"].get<double>());
+            if (!gripper->SetTargetPosition(pos))
+                log_err(std::string(context) + " gripper set position failed");
+            handled = true;
+        }
+        if (ee.contains("force") && ee["force"].is_number())
+        {
+            int force = static_cast<int>(ee["force"].get<double>());
+            if (!gripper->SetTargetForce(force))
+                log_err(std::string(context) + " gripper set force failed");
+            handled = true;
+        }
+        if (ee.contains("speed") && ee["speed"].is_number())
+        {
+            int speed = static_cast<int>(ee["speed"].get<double>());
+            if (!gripper->SetTargetSpeed(speed))
+                log_err(std::string(context) + " gripper set speed failed");
+            handled = true;
+        }
+
+        if (!handled)
+            log_err(std::string(context) + " gripper missing/invalid fields");
+        return;
+    }
+
+    log_err(std::string(context) + " no bound end effector for robot_index=" + std::to_string(robot_index));
 }
 
 static void save_data()
@@ -293,35 +400,7 @@ static void subscriber_loop()
                 {
                     const auto& ee = cmd_json[rk]["end_effector"];
                     JLOG("[Joint] " << rk << " end_effector payload=" << ee.dump());
-
-                    if (ee.contains("mode") && ee["mode"].is_number_integer())
-                    {
-                        int mode = ee["mode"].get<int>();
-                        JLOG("[Joint] " << rk << " end_effector.mode=" << mode);
-
-                        if (mode == 0 && ee.contains("position") && ee["position"].is_number())
-                        {
-                            double pos = ee["position"].get<double>();
-                            JLOG("[Joint] " << rk << " end_effector.position=" << std::fixed << std::setprecision(6) << pos);
-                            if (EndEffectorDevice* ee = get_end_effector())
-                                ee->HandlePosition(pos);
-                        }
-                        else if (mode == 1 && ee.contains("preset") && ee["preset"].is_number_integer())
-                        {
-                            int preset = ee["preset"].get<int>();
-                            JLOG("[Joint] " << rk << " end_effector.preset=" << preset);
-                            if (EndEffectorDevice* ee = get_end_effector())
-                                ee->HandlePreset(preset);
-                        }
-                        else
-                        {
-                            JERR("[Joint] end_effector missing/invalid fields for " << rk << ", ee=" << ee.dump());
-                        }
-                    }
-                    else
-                    {
-                        JERR("[Joint] end_effector missing/invalid mode for " << rk << ", ee=" << ee.dump());
-                    }
+                    handle_bound_end_effector(i, ee, "[Joint]", true);
                 }
                 else
                 {
@@ -362,30 +441,8 @@ static void subscriber_loop()
 
                     if (cmd_json[rk].contains("end_effector"))
                     {
-                        // std::cout << "here \n";
                         const auto& ee = cmd_json[rk]["end_effector"];
-                        if (ee.contains("mode") && ee["mode"].is_number_integer())
-                        {
-                            int mode = ee["mode"].get<int>();
-                            if (mode == 0 && ee.contains("position") && ee["position"].is_number())
-                            {
-                                if (EndEffectorDevice* ee_dev = get_end_effector())
-                                    ee_dev->HandlePosition(ee["position"].get<double>());
-                            }
-                            else if (mode == 1 && ee.contains("preset") && ee["preset"].is_number_integer())
-                            {
-                                if (EndEffectorDevice* ee_dev = get_end_effector())
-                                    ee_dev->HandlePreset(ee["preset"].get<int>());
-                            }
-                            else
-                            {
-                                std::cerr << "[Cartesian] end_effector missing/invalid fields for " << rk << "\n";
-                            }
-                        }
-                        else
-                        {
-                            std::cerr << "[Cartesian] end_effector missing/invalid mode for " << rk << "\n";
-                        }
+                        handle_bound_end_effector(i, ee, "[Cartesian]", false);
                     }
                 }
             }
@@ -402,6 +459,33 @@ void PluginMain()
     {
         std::cerr << "end effector serial init failed, end effector disabled\n";
         end_effector_device.reset();
+    }
+
+    dh_gripper = std::unique_ptr<DH_Modbus_Gripper>(
+        new DH_Modbus_Gripper(kGripperId, kGripperPort, kGripperBaud));
+    if (dh_gripper->open() < 0)
+    {
+        std::cerr << "DH gripper open failed, gripper disabled\n";
+        dh_gripper.reset();
+    }
+    else
+    {
+        int initstate = 0;
+        dh_gripper->GetInitState(initstate);
+        if (initstate != DH_Modbus_Gripper::S_INIT_FINISHED)
+        {
+            dh_gripper->Initialization();
+            std::cout << "Send grip init" << std::endl;
+
+            initstate = 0;
+            std::cout << "Send grip GetInitState" << std::endl;
+            while (initstate != DH_Modbus_Gripper::S_INIT_FINISHED)
+            {
+                dh_gripper->GetInitState(initstate);
+                usleep(50000);
+            }
+            std::cout << "Send grip GetInitState " << initstate << std::endl;
+        }
     }
     publisher.set(zmq::sockopt::sndhwm, 0);  // 0 表示无限小队列，但行为是：不能缓存
     publisher.set(zmq::sockopt::immediate, 1);  // SUB 未连接时直接丢弃
