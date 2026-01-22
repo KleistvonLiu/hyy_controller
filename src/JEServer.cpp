@@ -471,20 +471,23 @@ void PluginMain()
     else
     {
         int initstate = 0;
-        dh_gripper->GetInitState(initstate);
+        bool ok = dh_gripper->GetInitState(initstate);
+        std::cout << "GetInitState ok=" << ok << " state=" << initstate << std::endl;
+
         if (initstate != DH_Modbus_Gripper::S_INIT_FINISHED)
         {
             dh_gripper->Initialization();
             std::cout << "Send grip init" << std::endl;
 
-            initstate = 0;
-            std::cout << "Send grip GetInitState" << std::endl;
-            while (initstate != DH_Modbus_Gripper::S_INIT_FINISHED)
+            const int max_try = 200; // 200 * 50ms = 10s
+            for (int i = 0; i < max_try; ++i)
             {
-                dh_gripper->GetInitState(initstate);
+                ok = dh_gripper->GetInitState(initstate);
+                std::cout << "GetInitState ok=" << ok << " state=" << initstate << std::endl;
+                if (ok && initstate == DH_Modbus_Gripper::S_INIT_FINISHED)
+                    break;
                 usleep(50000);
             }
-            std::cout << "Send grip GetInitState " << initstate << std::endl;
         }
     }
     publisher.set(zmq::sockopt::sndhwm, 0);  // 0 表示无限小队列，但行为是：不能缓存
