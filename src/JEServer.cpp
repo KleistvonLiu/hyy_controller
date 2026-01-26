@@ -47,6 +47,7 @@ static std::thread* pub_th=nullptr;
 static std::thread* sub_th=nullptr;
 static std::atomic<bool> is_stop(true);
 static std::thread* stop_th=nullptr;
+static std::atomic<double> g_gripper_position{-1.0};  // last known gripper position (0~1, -1 invalid)
 
 // End effector serial config (adjust port if needed)
 static const char* kEndEffectorPort = "/dev/ttyS1";
@@ -100,7 +101,7 @@ static void handle_bound_end_effector(int robot_index,
     {
         if (!ee.contains("mode") || !ee["mode"].is_number_integer())
         {
-            log_err(std::string(context) + " end_effector missing/invalid mode");
+            log_err(std::string(context) + " EndEffector missing/invalid mode");
             return;
         }
 
@@ -117,7 +118,7 @@ static void handle_bound_end_effector(int robot_index,
         }
         else
         {
-            log_err(std::string(context) + " end_effector missing/invalid fields");
+            log_err(std::string(context) + " EndEffector missing/invalid fields");
         }
         return;
     }
@@ -163,7 +164,21 @@ static void handle_bound_end_effector(int robot_index,
         }
 
         if (!handled)
+        {
             log_err(std::string(context) + " gripper missing/invalid fields");
+            return;
+        }
+
+        int curpos_raw = 0;
+        if (gripper->GetCurrentPosition(curpos_raw))
+        {
+            g_gripper_position.store(static_cast<double>(curpos_raw) / 1000.0,
+                                     std::memory_order_relaxed);
+        }
+        else
+        {
+            log_err(std::string(context) + " gripper read position failed");
+        }
         return;
     }
 
@@ -278,6 +293,14 @@ static void publisher_loop()
 
             HYYRobotBase::GetCurrentLastTargetCartesian(NULL, NULL, (HYYRobotBase::robpose*)Cartesian.data(), i);
             data[rk]["TargetCartesian"] = Cartesian;
+
+            // -------- Gripper state (cached from control thread) --------
+            if (i == kRobotIndexGripper)
+            {
+                double gripper_pos = g_gripper_position.load(std::memory_order_relaxed);
+                data[rk]["EndEffector"]["CurrentPosition"] = gripper_pos;
+                // data[rk]["EndEffector"]["Valid"] = (gripper_pos >= 0.0);
+            }
         }
 
         publisher.send(zmq::buffer("State " + data.dump()));
@@ -397,15 +420,15 @@ static void subscriber_loop()
                 HYYRobotBase::ServoJoint(&jt, time, i);
                 JLOG("[Joint] " << rk << " ServoJoint done.");
 
-                if (cmd_json[rk].contains("end_effector"))
+                if (cmd_json[rk].contains("EndEffector"))
                 {
-                    const auto& ee = cmd_json[rk]["end_effector"];
-                    JLOG("[Joint] " << rk << " end_effector payload=" << ee.dump());
+                    const auto& ee = cmd_json[rk]["EndEffector"];
+                    JLOG("[Joint] " << rk << " EndEffector payload=" << ee.dump());
                     handle_bound_end_effector(i, ee, "[Joint]", true);
                 }
                 else
                 {
-                    JLOG("[Joint] " << rk << " end_effector not present.");
+                    JLOG("[Joint] " << rk << " EndEffector not present.");
                 }
             }
         }
@@ -440,9 +463,9 @@ static void subscriber_loop()
                     HYYRobotBase::init_robpose(&pt,cartesian.data(),cartesian.data()+3);
                     HYYRobotBase::ServoCartesian(&pt,time,NULL,NULL,i);
 
-                    if (cmd_json[rk].contains("end_effector"))
+                    if (cmd_json[rk].contains("EndEffector"))
                     {
-                        const auto& ee = cmd_json[rk]["end_effector"];
+                        const auto& ee = cmd_json[rk]["EndEffector"];
                         handle_bound_end_effector(i, ee, "[Cartesian]", false);
                     }
                 }
