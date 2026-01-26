@@ -14,6 +14,7 @@
 #include <memory>
 #include <unistd.h>
 #include <iomanip>
+// #include <chrono>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -146,6 +147,8 @@ static void handle_bound_end_effector(int robot_index,
             // std::cout << "control gripper position: " << pos << std::endl;
             if (!gripper->SetTargetPosition(pos))
                 log_err(std::string(context) + " gripper set position failed");
+
+            g_gripper_position.store(static_cast<double>(pos) / 1000.0, std::memory_order_relaxed);
             handled = true;
         }
         if (ee.contains("force") && ee["force"].is_number())
@@ -169,16 +172,23 @@ static void handle_bound_end_effector(int robot_index,
             return;
         }
 
-        int curpos_raw = 0;
-        if (gripper->GetCurrentPosition(curpos_raw))
-        {
-            g_gripper_position.store(static_cast<double>(curpos_raw) / 1000.0,
-                                     std::memory_order_relaxed);
-        }
-        else
-        {
-            log_err(std::string(context) + " gripper read position failed");
-        }
+        // int curpos_raw = 0;
+        // const auto pos_start = std::chrono::steady_clock::now();
+        // const bool pos_ok = gripper->SetTargetPosition(curpos_raw);
+        // const auto pos_elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        //                                 std::chrono::steady_clock::now() - pos_start)
+        //                                 .count();
+        // std::cout << "GetCurrentPosition cost: " << pos_elapsed_us << "us" << std::endl;
+        // if (pos_ok)
+        // // if (true)
+        // {
+        //     g_gripper_position.store(static_cast<double>(curpos_raw) / 1000.0,
+        //                              std::memory_order_relaxed);
+        // }
+        // else
+        // {
+        //     log_err(std::string(context) + " gripper read position failed");
+        // }
         return;
     }
 
