@@ -370,6 +370,7 @@ static void subscriber_loop()
         }else if("Joint"==topic)
         {
             JLOG("[Joint] received joint: rn=" << rn);
+            // std::cout << "Received one msg with time: " << cmd_json["Robot0"]["time"].get<double>() << "\n";
 
             auto vec_to_string = [](const std::vector<double>& v) -> std::string {
                 std::ostringstream oss;
