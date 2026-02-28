@@ -1,0 +1,6 @@
+{
+  "end_effectors": [
+    { "type": "gripper_DH", "port": "/dev/ttyUSB0", "baud": 115200, "id": 1 },
+    { "type": "endeffector", "port": "/dev/ttyS1", "baud": 115200 }
+  ]
+}

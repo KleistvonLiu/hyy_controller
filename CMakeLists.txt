@@ -99,6 +99,8 @@ list(REMOVE_ITEM DIR_SRCS
 add_library(JEServer SHARED
     src/JEServer.cpp
     src/JeComm/dh_device.cpp
+    src/JeComm/end_effector_manager.cpp
+    src/JeComm/end_effector_slot.cpp
     src/JeComm/dh_modbus_gripper.cpp
     src/JeComm/dh_modbus_rtu.cpp
     src/JeComm/dh_transport.cpp

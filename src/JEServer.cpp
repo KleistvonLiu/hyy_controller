@@ -1,7 +1,6 @@
 #include "HYYRobotInterface.h"
 #include "device_interface.h"
-#include "end_effector_device.h"
-#include "dh_modbus_gripper.h"
+#include "end_effector_manager.h"
 #include <zmq.hpp>
 #include <string>
 #include <iostream>
@@ -47,143 +46,7 @@ static std::thread* pub_th=nullptr;
 static std::thread* sub_th=nullptr;
 static std::atomic<bool> is_stop(true);
 static std::thread* stop_th=nullptr;
-static std::atomic<double> g_gripper_position{-1.0};  // last known gripper position (0~1, -1 invalid)
-
-// End effector serial config (adjust port if needed)
-static const char* kEndEffectorPort = "/dev/ttyS1";
-static constexpr int kEndEffectorBaud = 115200;
-static std::unique_ptr<EndEffectorDevice> end_effector_device;
-
-// DH Modbus gripper config (adjust port/id if needed)
-static const char* kGripperPort = "/dev/ttyUSB0";
-static constexpr int kGripperBaud = 115200;
-static constexpr int kGripperId = 1;
-static std::unique_ptr<DH_Modbus_Gripper> dh_gripper;
-
-// Binding: Robot1 -> EndEffectorDevice, Robot0 -> Gripper
-static constexpr int kRobotIndexGripper = 0;
-static constexpr int kRobotIndexEndEffector = 1;
-
-static EndEffectorDevice* get_end_effector()
-{
-    if (!end_effector_device)
-    {
-        std::cerr << "end effector serial not ready, skip command\n";
-        return nullptr;
-    }
-    return end_effector_device.get();
-}
-
-static DH_Modbus_Gripper* get_gripper()
-{
-    if (!dh_gripper)
-    {
-        std::cerr << "gripper not ready, skip command\n";
-        return nullptr;
-    }
-    return dh_gripper.get();
-}
-
-static void handle_bound_end_effector(int robot_index,
-                                      const nlohmann::ordered_json& ee,
-                                      const char* context,
-                                      bool debug_log)
-{
-    // std::cout << "Here: " << robot_index << std::endl;
-    auto log_err = [&](const std::string& msg) {
-        if (debug_log)
-            JERR(msg);
-        else
-            std::cerr << msg << std::endl;
-    };
-
-    if (robot_index == kRobotIndexEndEffector)
-    {
-        if (!ee.contains("mode") || !ee["mode"].is_number_integer())
-        {
-            log_err(std::string(context) + " EndEffector missing/invalid mode");
-            return;
-        }
-
-        int mode = ee["mode"].get<int>();
-        if (mode == 0 && ee.contains("position") && ee["position"].is_number())
-        {
-            if (EndEffectorDevice* ee_dev = get_end_effector())
-                ee_dev->HandlePosition(ee["position"].get<double>());
-        }
-        else if (mode == 1 && ee.contains("preset") && ee["preset"].is_number_integer())
-        {
-            if (EndEffectorDevice* ee_dev = get_end_effector())
-                ee_dev->HandlePreset(ee["preset"].get<int>());
-        }
-        else
-        {
-            log_err(std::string(context) + " EndEffector missing/invalid fields");
-        }
-        return;
-    }
-
-    if (robot_index == kRobotIndexGripper)
-    {
-        // std::cout << "Here: " << ee << std::endl;
-        DH_Modbus_Gripper* gripper = get_gripper();
-        if (!gripper)
-        {
-            log_err(std::string(context) + " gripper not ready");
-            return;
-        }
-
-        bool handled = false;
-        if (ee.contains("init") && ee["init"].is_boolean() && ee["init"].get<bool>())
-        {
-            if (!gripper->Initialization())
-                log_err(std::string(context) + " gripper init failed");
-            handled = true;
-        }
-        if (ee.contains("position") && ee["position"].is_number())
-        {
-            int pos = static_cast<int>(ee["position"].get<double>() * 1000);
-            // std::cout << "control gripper position: " << pos << std::endl;
-            if (!gripper->SetTargetPosition(pos))
-                log_err(std::string(context) + " gripper set position failed");
-            handled = true;
-        }
-        if (ee.contains("force") && ee["force"].is_number())
-        {
-            int force = static_cast<int>(ee["force"].get<double>());
-            if (!gripper->SetTargetForce(force))
-                log_err(std::string(context) + " gripper set force failed");
-            handled = true;
-        }
-        if (ee.contains("speed") && ee["speed"].is_number())
-        {
-            int speed = static_cast<int>(ee["speed"].get<double>());
-            if (!gripper->SetTargetSpeed(speed))
-                log_err(std::string(context) + " gripper set speed failed");
-            handled = true;
-        }
-
-        if (!handled)
-        {
-            log_err(std::string(context) + " gripper missing/invalid fields");
-            return;
-        }
-
-        int curpos_raw = 0;
-        if (gripper->GetCurrentPosition(curpos_raw))
-        {
-            g_gripper_position.store(static_cast<double>(curpos_raw) / 1000.0,
-                                     std::memory_order_relaxed);
-        }
-        else
-        {
-            log_err(std::string(context) + " gripper read position failed");
-        }
-        return;
-    }
-
-    log_err(std::string(context) + " no bound end effector for robot_index=" + std::to_string(robot_index));
-}
+static EndEffectorManager g_end_effector_manager;
 
 static void save_data()
 {
@@ -294,13 +157,20 @@ static void publisher_loop()
             HYYRobotBase::GetCurrentLastTargetCartesian(NULL, NULL, (HYYRobotBase::robpose*)Cartesian.data(), i);
             data[rk]["TargetCartesian"] = Cartesian;
 
-            // -------- Gripper state (cached from control thread) --------
-            if (i == kRobotIndexGripper)
-            {
-                double gripper_pos = g_gripper_position.load(std::memory_order_relaxed);
-                data[rk]["EndEffector"]["CurrentPosition"] = gripper_pos;
-                // data[rk]["EndEffector"]["Valid"] = (gripper_pos >= 0.0);
-            }
+            EndEffectorSlotState slot_state = g_end_effector_manager.GetSlotState(i);
+            data[rk]["EndEffector"]["CurrentPosition"] = slot_state.current_position;
+        }
+
+        std::vector<EndEffectorSlotState> slot_states = g_end_effector_manager.GetAllStates();
+        data["EndEffectors"] = nlohmann::ordered_json::array();
+        for (size_t idx = 0; idx < slot_states.size(); ++idx)
+        {
+            nlohmann::ordered_json slot_json;
+            slot_json["slot_index"] = slot_states[idx].slot_index;
+            slot_json["type"] = slot_states[idx].type;
+            slot_json["ready"] = slot_states[idx].ready;
+            slot_json["current_position"] = slot_states[idx].current_position;
+            data["EndEffectors"].push_back(slot_json);
         }
 
         publisher.send(zmq::buffer("State " + data.dump()));
@@ -371,6 +241,9 @@ static void subscriber_loop()
                 oss << "]";
                 return oss.str();
             };
+#if !JOINT_DEBUG_LOG
+            (void)vec_to_string;
+#endif
 
             for (int i = 0; i < rn; i++)
             {
@@ -424,7 +297,7 @@ static void subscriber_loop()
                 {
                     const auto& ee = cmd_json[rk]["EndEffector"];
                     JLOG("[Joint] " << rk << " EndEffector payload=" << ee.dump());
-                    handle_bound_end_effector(i, ee, "[Joint]", true);
+                    g_end_effector_manager.DispatchByRobotIndex(i, ee, "[Joint]", true);
                 }
                 else
                 {
@@ -466,7 +339,7 @@ static void subscriber_loop()
                     if (cmd_json[rk].contains("EndEffector"))
                     {
                         const auto& ee = cmd_json[rk]["EndEffector"];
-                        handle_bound_end_effector(i, ee, "[Cartesian]", false);
+                        g_end_effector_manager.DispatchByRobotIndex(i, ee, "[Cartesian]", false);
                     }
                 }
             }
@@ -476,45 +349,15 @@ static void subscriber_loop()
 
 void PluginMain()
 {
-    SerialOptions ee_serial_opts(0, 5, SerialOptions::kProfileJEServerLegacy);
-    end_effector_device = std::unique_ptr<EndEffectorDevice>(
-        new EndEffectorDevice(kEndEffectorPort, kEndEffectorBaud, ee_serial_opts));
-    if (!end_effector_device->Open())
+    const std::string kEndEffectorConfigPath = "config/jeserver_end_effectors.json";
+    const int rn = HYYRobotBase::robot_getNUM();
+    std::string ee_err;
+    if (!g_end_effector_manager.LoadAndInit(kEndEffectorConfigPath, rn, &ee_err))
     {
-        std::cerr << "end effector serial init failed, end effector disabled\n";
-        end_effector_device.reset();
+        std::cerr << "end effector manager init failed: " << ee_err << std::endl;
+        return;
     }
 
-    dh_gripper = std::unique_ptr<DH_Modbus_Gripper>(
-        new DH_Modbus_Gripper(kGripperId, kGripperPort, kGripperBaud));
-    if (dh_gripper->open() < 0)
-    {
-        std::cerr << "DH gripper open failed, gripper disabled\n";
-        dh_gripper.reset();
-    }
-    else
-    {
-        int initstate = 0;
-        bool ok = dh_gripper->GetInitState(initstate);
-        std::cout << "GetInitState ok=" << ok << " state=" << initstate << std::endl;
-
-        if (initstate != DH_Modbus_Gripper::S_INIT_FINISHED)
-        {
-            dh_gripper->Initialization();
-            std::cout << "Trying to init gripper" << std::endl;
-
-            const int max_try = 40; // 200 * 50ms = 10s
-            for (int i = 0; i < max_try; ++i)
-            {
-                ok = dh_gripper->GetInitState(initstate);
-                std::cout << "GetInitState ok=" << ok << " state=" << initstate << std::endl;
-                if (ok && initstate == DH_Modbus_Gripper::S_INIT_FINISHED)
-                    break;
-                usleep(50000);
-            }
-            std::cout << "Gripper init succeeded, " << initstate << std::endl;
-        }
-    }
     publisher.set(zmq::sockopt::sndhwm, 0);  // 0 表示无限小队列，但行为是：不能缓存
     publisher.set(zmq::sockopt::immediate, 1);  // SUB 未连接时直接丢弃
     publisher.bind("tcp://*:8000");
