@@ -101,12 +101,32 @@ add_library(JEServer SHARED
     src/JeComm/dh_device.cpp
     src/JeComm/end_effector_manager.cpp
     src/JeComm/end_effector_slot.cpp
+    src/JeComm/piper/gripper_client.cpp
+    src/JeComm/piper/internal/can_socket.cpp
+    src/JeComm/piper/internal/protocol_codec.cpp
+    src/JeComm/piper/internal/fps_counter.cpp
     src/JeComm/dh_modbus_gripper.cpp
     src/JeComm/dh_modbus_rtu.cpp
     src/JeComm/dh_transport.cpp
     src/JeComm/end_effector_device.cpp
 )
 target_link_libraries(JEServer RobotControl m pthread zmq rt dl xml2)
+
+add_executable(JEEndEffectorTest
+    src/JEEndEffectorTest.cpp
+    src/JeComm/dh_device.cpp
+    src/JeComm/end_effector_manager.cpp
+    src/JeComm/end_effector_slot.cpp
+    src/JeComm/piper/gripper_client.cpp
+    src/JeComm/piper/internal/can_socket.cpp
+    src/JeComm/piper/internal/protocol_codec.cpp
+    src/JeComm/piper/internal/fps_counter.cpp
+    src/JeComm/dh_modbus_gripper.cpp
+    src/JeComm/dh_modbus_rtu.cpp
+    src/JeComm/dh_transport.cpp
+    src/JeComm/end_effector_device.cpp
+)
+target_link_libraries(JEEndEffectorTest m pthread zmq rt dl xml2)
 
 # add_executable(JETest src/JETest.cpp)
 # target_link_libraries(JETest zmq rt dl xml2)

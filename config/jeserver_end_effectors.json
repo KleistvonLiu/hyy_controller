@@ -1,6 +1,16 @@
 {
   "end_effectors": [
-    { "type": "gripper_DH", "port": "/dev/ttyUSB0", "baud": 115200, "id": 1 },
-    { "type": "endeffector", "port": "/dev/ttyS1", "baud": 115200 }
+    {
+      "type": "gripper_piper",
+      "can_ifname": "can0",
+      "recv_timeout_ms": 1000,
+      "monitor_period_ms": 50,
+      "fps_period_ms": 100,
+      "is_ok_window": 5,
+      "enable_sdk_gripper_limit": false,
+      "enable_abnormal_filter": true,
+      "sdk_range_min_m": 0.0,
+      "sdk_range_max_m": 0.07
+    }
   ]
 }
