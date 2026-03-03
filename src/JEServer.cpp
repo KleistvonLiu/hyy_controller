@@ -351,7 +351,7 @@ static void subscriber_loop()
 
 void PluginMain()
 {
-    const std::string kEndEffectorConfigPath = "config/jeserver_end_effectors.json";
+    const std::string kEndEffectorConfigPath = "/home/robot/Work/code/hyy_controller/config/jeserver_end_effectors.json";
     const int rn = HYYRobotBase::robot_getNUM();
     std::string ee_err;
     if (!g_end_effector_manager.LoadAndInit(kEndEffectorConfigPath, rn, &ee_err))

@@ -2,7 +2,7 @@
   "end_effectors": [
     {
       "type": "gripper_piper",
-      "can_ifname": "can0",
+      "can_ifname": "can1",
       "recv_timeout_ms": 1000,
       "monitor_period_ms": 50,
       "fps_period_ms": 100,
