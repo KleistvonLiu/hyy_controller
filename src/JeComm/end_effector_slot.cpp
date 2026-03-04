@@ -238,7 +238,14 @@ public:
         {
             int pos = static_cast<int>(cmd["position"].get<double>() * 1000.0);
             if (!gripper_->SetTargetPosition(pos))
+            {
                 log_with_context(context, "gripper_DH set position failed");
+            }
+            else
+            {
+                current_position_.store(static_cast<double>(pos) / 1000.0,
+                                        std::memory_order_relaxed);
+            }
             handled = true;
         }
         if (cmd.contains("force") && cmd["force"].is_number())
@@ -260,18 +267,6 @@ public:
         {
             log_with_context(context, "gripper_DH missing/invalid fields");
             return;
-        }
-
-        int curpos_raw = 0;
-        if (gripper_->GetCurrentPosition(curpos_raw))
-        {
-            current_position_.store(static_cast<double>(curpos_raw) / 1000.0,
-                                    std::memory_order_relaxed);
-        }
-        else
-        {
-            current_position_.store(-1.0, std::memory_order_relaxed);
-            log_with_context(context, "gripper_DH read position failed");
         }
     }
 
