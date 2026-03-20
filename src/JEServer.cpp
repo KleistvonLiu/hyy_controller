@@ -346,6 +346,53 @@ static void subscriber_loop()
                 }
             }
         }
+        else if ("MoveA"==topic)
+        {
+            // 固定格式：
+            // MoveA {"Robot0":{"joint":[j1,j2,j3,j4,j5,j6,j7],"speed":0.2}}
+            std::vector<double> joint = cmd_json["Robot0"]["joint"].get<std::vector<double>>();
+            double speed_value = cmd_json["Robot0"]["speed"].get<double>();
+
+            int dof = HYYRobotBase::robot_getDOF(0);
+            HYYRobotBase::robjoint jt;
+            HYYRobotBase::init_robjoint(&jt, joint.data(), dof);
+
+            std::vector<double> joint_speed(dof, speed_value);
+            HYYRobotBase::speed sp;
+            HYYRobotBase::init_speed(&sp, joint_speed.data(), dof, 1, speed_value, speed_value, 1);
+
+            HYYRobotBase::MoveA(&jt, &sp, NULL, NULL, NULL);
+
+            if (cmd_json["Robot0"].contains("EndEffector"))
+            {
+                const auto& ee = cmd_json["Robot0"]["EndEffector"];
+                g_end_effector_manager.DispatchByRobotIndex(0, ee, "[MoveA]", false);
+            }
+        }
+        else if ("MoveL"==topic)
+        {
+            // 固定格式：
+            // MoveL {"Robot0":{"cartesian":[x,y,z,rx,ry,rz],"rot_speed":0.5,"tra_speed":0.1}}
+            std::vector<double> cartesian = cmd_json["Robot0"]["cartesian"].get<std::vector<double>>();
+            double rot_speed = cmd_json["Robot0"]["rot_speed"].get<double>();
+            double tra_speed = cmd_json["Robot0"]["tra_speed"].get<double>();
+
+            HYYRobotBase::robpose pt;
+            HYYRobotBase::init_robpose(&pt, cartesian.data(), cartesian.data() + 3);
+
+            int dof = HYYRobotBase::robot_getDOF(0);
+            std::vector<double> joint_speed(dof, rot_speed);
+            HYYRobotBase::speed sp;
+            HYYRobotBase::init_speed(&sp, joint_speed.data(), dof, 1, tra_speed, rot_speed, 1);
+
+            HYYRobotBase::MoveL(&pt, &sp, NULL, NULL, NULL);
+
+            if (cmd_json["Robot0"].contains("EndEffector"))
+            {
+                const auto& ee = cmd_json["Robot0"]["EndEffector"];
+                g_end_effector_manager.DispatchByRobotIndex(0, ee, "[MoveL]", false);
+            }
+        }
     }
 }
 
@@ -366,12 +413,14 @@ void PluginMain()
     pub_th=new std::thread(publisher_loop);
     pub_th->detach();
     subscriber.connect("tcp://192.168.0.35:8001");
-    // subscriber.set(zmq::sockopt::subscribe, "");
     subscriber.set(zmq::sockopt::rcvhwm, 1);
     subscriber.set(zmq::sockopt::conflate, 1);   // 只保留最后一条
+    // subscriber.set(zmq::sockopt::subscribe, "");
     subscriber.set(zmq::sockopt::subscribe, "Switch ");
     subscriber.set(zmq::sockopt::subscribe, "Cartesian ");  // 只收你需要的
     subscriber.set(zmq::sockopt::subscribe, "Joint ");  // 只收你需要的
+    subscriber.set(zmq::sockopt::subscribe, "MoveA ");  // 单臂MoveA
+    subscriber.set(zmq::sockopt::subscribe, "MoveL ");  // 单臂MoveL
     sub_th=new std::thread(subscriber_loop);
     sub_th->detach();
 }
