@@ -346,7 +346,8 @@ public:
         if (cmd.contains("position") && cmd["position"].is_number())
         {
             const double normalized = clamp_double(cmd["position"].get<double>(), 0.0, 1.0);
-            out.angle_0p001mm = static_cast<int32_t>(std::lround((1-normalized) * static_cast<double>(kPiperAngleMaxRaw)));
+            // out.angle_0p001mm = static_cast<int32_t>(std::lround((1-normalized) * static_cast<double>(kPiperAngleMaxRaw)));
+            out.angle_0p001mm = static_cast<int32_t>(std::lround(normalized * static_cast<double>(kPiperAngleMaxRaw)));
             has_control_field = true;
         }
 
