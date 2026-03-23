@@ -202,6 +202,30 @@ void handle_joint_or_cartesian(const std::string& topic,
     }
 }
 
+void handle_gripper(const nlohmann::ordered_json& cmd_json,
+                    EndEffectorManager* manager,
+                    size_t robot_num)
+{
+    if (!manager)
+        return;
+
+    for (size_t i = 0; i < robot_num; ++i)
+    {
+        const std::string robot_key = std::string("Robot") + std::to_string(i);
+        if (!cmd_json.contains(robot_key) || !cmd_json[robot_key].is_object())
+            continue;
+
+        const nlohmann::ordered_json& robot_payload = cmd_json[robot_key];
+        if (robot_payload.contains("EndEffector") && robot_payload["EndEffector"].is_object())
+        {
+            manager->DispatchByRobotIndex(static_cast<int>(i), robot_payload["EndEffector"], "Gripper", true);
+            continue;
+        }
+
+        manager->DispatchByRobotIndex(static_cast<int>(i), robot_payload, "Gripper", true);
+    }
+}
+
 bool parse_args(int argc,
                 char** argv,
                 std::string* config_path,
@@ -300,6 +324,7 @@ int main(int argc, char** argv)
     // subscriber.set(zmq::sockopt::subscribe, "Cartesian ");
     // subscriber.set(zmq::sockopt::subscribe, "Joint");
     subscriber.set(zmq::sockopt::subscribe, "Joint ");
+    subscriber.set(zmq::sockopt::subscribe, "Gripper ");
     subscriber.connect(sub_endpoint);
 
     const int publish_period_ms = (state_period_ms <= 0) ? 500 : state_period_ms;
@@ -356,6 +381,11 @@ int main(int argc, char** argv)
                 {
                     std::cout << "[recv] topic=" << topic << " dispatch EndEffector" << std::endl;
                     handle_joint_or_cartesian(topic, cmd_json, &manager, &robot_states);
+                }
+                else if (topic == "Gripper")
+                {
+                    std::cout << "[recv] topic=Gripper dispatch EndEffector" << std::endl;
+                    handle_gripper(cmd_json, &manager, robot_states.size());
                 }
                 else if (topic == "Switch")
                 {

@@ -49,6 +49,29 @@ static std::atomic<bool> is_stop(true);
 static std::thread* stop_th=nullptr;
 static EndEffectorManager g_end_effector_manager;
 
+static void dispatch_gripper_command(const nlohmann::ordered_json& cmd_json,
+                                     int rn)
+{
+    for (int i = 0; i < rn; ++i)
+    {
+        const std::string rk = std::string("Robot") + std::to_string(i);
+        if (!cmd_json.contains(rk) || !cmd_json[rk].is_object())
+            continue;
+
+        const nlohmann::ordered_json& robot_payload = cmd_json[rk];
+        if (robot_payload.contains("EndEffector") && robot_payload["EndEffector"].is_object())
+        {
+            g_end_effector_manager.DispatchByRobotIndex(i,
+                                                        robot_payload["EndEffector"],
+                                                        "[Gripper]",
+                                                        false);
+            continue;
+        }
+
+        g_end_effector_manager.DispatchByRobotIndex(i, robot_payload, "[Gripper]", false);
+    }
+}
+
 static void save_data()
 {
     HYYRobotBase::RTimer timer;
@@ -393,6 +416,22 @@ static void subscriber_loop()
                 g_end_effector_manager.DispatchByRobotIndex(0, ee, "[MoveL]", false);
             }
         }
+        else if ("Gripper"==topic)
+        {
+            // 独立夹爪消息，推荐格式：
+            // Gripper {"Robot0":{"command":"open"}}
+            // Gripper {"Robot0":{"command":"close"}}
+            // Gripper {"Robot0":{"command":"close","torque":0.5}}
+            // Gripper {"Robot0":{"command":"open","torque":1.0}}
+            // 也兼容：
+            // Gripper {"Robot0":{"EndEffector":{"command":"close","torque":0.5}}}
+            // 说明：
+            // 1) 目前只考虑 piper 夹爪；
+            // 2) command 支持 "open"/"close"；
+            // 3) torque 单位为 N·m，可选；若未传则默认使用 1.0 N·m；
+            // 4) 若需要，也可直接传 effort_0p001Nm 原始值。
+            dispatch_gripper_command(cmd_json, rn);
+        }
     }
 }
 
@@ -421,6 +460,7 @@ void PluginMain()
     subscriber.set(zmq::sockopt::subscribe, "Joint ");  // 只收你需要的
     subscriber.set(zmq::sockopt::subscribe, "MoveA ");  // 单臂MoveA
     subscriber.set(zmq::sockopt::subscribe, "MoveL ");  // 单臂MoveL
+    subscriber.set(zmq::sockopt::subscribe, "Gripper ");  // 独立夹爪开/闭消息
     sub_th=new std::thread(subscriber_loop);
     sub_th->detach();
 }

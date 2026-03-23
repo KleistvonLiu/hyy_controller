@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -336,7 +337,7 @@ public:
 
         piper::gripper::GripperCommand out;
         out.angle_0p001mm = last_angle_raw_.load(std::memory_order_relaxed);
-        out.effort_0p001Nm = static_cast<uint16_t>(last_effort_raw_.load(std::memory_order_relaxed));
+        out.effort_0p001Nm = static_cast<uint16_t>(kPiperDefaultEffortRaw);
         out.status = piper::gripper::StatusCode::Enable;
         out.set_zero = piper::gripper::SetZero::Invalid;
 
@@ -358,6 +359,16 @@ public:
             has_control_field = true;
         }
 
+        if (cmd.contains("torque") && cmd["torque"].is_number())
+        {
+            const double torque_nm = clamp_double(
+                cmd["torque"].get<double>(),
+                0.0,
+                static_cast<double>(kPiperEffortMaxRaw) * 0.001);
+            out.effort_0p001Nm = static_cast<uint16_t>(std::lround(torque_nm * 1000.0));
+            has_control_field = true;
+        }
+
         if (cmd.contains("angle_0p001mm") && cmd["angle_0p001mm"].is_number())
         {
             const int raw = static_cast<int>(std::lround(cmd["angle_0p001mm"].get<double>()));
@@ -369,6 +380,44 @@ public:
         {
             const int raw = static_cast<int>(std::lround(cmd["effort_0p001Nm"].get<double>()));
             out.effort_0p001Nm = static_cast<uint16_t>(clamp_int(raw, kPiperEffortMinRaw, kPiperEffortMaxRaw));
+            has_control_field = true;
+        }
+
+        if (cmd.contains("command") || cmd.contains("gripper") || cmd.contains("action"))
+        {
+            const nlohmann::ordered_json* action_node = nullptr;
+            if (cmd.contains("command"))
+                action_node = &cmd["command"];
+            else if (cmd.contains("gripper"))
+                action_node = &cmd["gripper"];
+            else
+                action_node = &cmd["action"];
+
+            if (!action_node->is_string())
+            {
+                log_with_context(context, "gripper_piper invalid open/close command");
+                return;
+            }
+
+            std::string action = action_node->get<std::string>();
+            std::transform(action.begin(),
+                           action.end(),
+                           action.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+            if (action == "open")
+            {
+                out.angle_0p001mm = kPiperAngleMaxRaw;
+            }
+            else if (action == "close")
+            {
+                out.angle_0p001mm = kPiperAngleMinRaw;
+            }
+            else
+            {
+                log_with_context(context, "gripper_piper unsupported open/close command");
+                return;
+            }
             has_control_field = true;
         }
 
@@ -512,6 +561,7 @@ private:
     static const int kPiperAngleMaxRaw = 70000;
     static const int kPiperEffortMinRaw = 0;
     static const int kPiperEffortMaxRaw = 5000;
+    static const int kPiperDefaultEffortRaw = 1000;
 
     int slot_index_;
     piper::gripper::Config cfg_;
